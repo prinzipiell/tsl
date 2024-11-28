@@ -1,0 +1,117 @@
+// https://discourse.threejs.org/t/2d-shape-projection-on-plane-where-3d-objects-are-positioned/49539/3
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { SimplexNoise } from "three/addons/math/SimplexNoise.js";
+
+console.clear();
+let simplexNoise = new SimplexNoise();
+
+let scene = new THREE.Scene();
+let camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 1, 1000);
+camera.position.set(0, 5, 8);
+camera.lookAt(scene.position);
+let renderer = new THREE.WebGLRenderer({
+  antialias: true
+});
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x404040);
+document.body.appendChild(renderer.domElement);
+
+let controls = new OrbitControls(camera, renderer.domElement);
+
+let light = new THREE.DirectionalLight(0xffffff, 1);
+light.position.setScalar(1);
+scene.add(
+    light,
+  new THREE.AmbientLight(0xffffff, 0.5)
+);
+
+let objects = new Array(5).fill(0).map((p,idx)=>{return setObject(idx)});
+//console.log(objects);
+let selected = objects[0];
+
+let g = new THREE.PlaneGeometry(10, 10, 20, 20);
+g.rotateX(-Math.PI * 0.5);
+for(let i = 0; i < g.attributes.position.count; i++){
+  let u = g.attributes.uv.getX(i) * 2;
+  let v = g.attributes.uv.getY(i) * 2;
+  g.attributes.position.setY(i, simplexNoise.noise(u, v) * 0.75);
+}
+g.computeVertexNormals();
+
+let width = 10, height = 10;
+let objCamera = new THREE.OrthographicCamera(width / - 2, width / 2, height / 2, height / - 2, 0, 200);
+objCamera.position.y = 100;
+objCamera.rotation.x = -Math.PI * 0.5;
+
+let objRT = new THREE.WebGLRenderTarget(1024, 1024);
+
+let overrideMaterial = new THREE.MeshBasicMaterial({color: 0xffffff});
+
+let m = new THREE.MeshLambertMaterial({
+  color: 0x003264,
+  map: new THREE.TextureLoader().load("https://threejs.org/examples/textures/water.jpg"),
+  emissiveMap: objRT.texture,
+  emissive: 0x00ff00
+});
+
+let pl = new THREE.Mesh(g, m);
+scene.add(pl);
+
+window.addEventListener("resize", onResize);
+
+let clock = new THREE.Clock();
+
+renderer.setAnimationLoop(_ => {
+    
+  let t = clock.getElapsedTime() * 0.5; //speed of spheres
+  
+  objects.forEach((obj, idx) => {
+    let ud = obj.userData;
+    obj.position.x = Math.cos(ud.scaleX * t + ud.initPhase) * 4.75;
+    obj.position.y = 1;
+    obj.position.z = Math.sin(ud.scaleZ * t + ud.initPhase) * 4.75;
+  })
+  
+  // orthographic
+  pl.visible = !pl.visible;
+  renderer.setRenderTarget(objRT);
+  scene.overrideMaterial = overrideMaterial;
+  renderer.setClearColor(0x000000);
+  renderer.render(scene, objCamera);
+  
+  // perspective
+  pl.visible = !pl.visible;
+  renderer.setRenderTarget(null);
+  scene.overrideMaterial = null;
+  renderer.setClearColor(0x404040);
+  renderer.render(scene, camera);  
+})
+
+function setObject(idx){
+  let g = new THREE.SphereGeometry(0.25);
+  let m = new THREE.MeshPhongMaterial({color: 0x111111 });
+  let sp = new THREE.Mesh(g, m);
+  sp.userData = {
+    initPhase: Math.PI * 2 * Math.random(),
+    scaleX: Math.random() * 0.5 + 0.5,
+    scaleZ: Math.random() * 0.5 + 0.5
+  }
+  scene.add(sp);
+  
+  let btn = document.createElement("button");
+  btn.innerText = "Object " + idx;
+  selections.appendChild(btn);
+  btn.addEventListener("click", event => {
+    selections.querySelectorAll("button").forEach(b => {b.classList.remove("selected")});
+    btn.classList.add("selected");
+    selected = sp
+  });
+  return sp;
+}
+
+function onResize(event) {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+}

@@ -1,0 +1,297 @@
+@import url('https://fonts.googleapis.com/css?family=Oswald&display=swap');
+@import url('https://fonts.googleapis.com/css?family=Quicksand&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@800&display=swap');
+
+html, body {
+    margin: 0px;
+    padding: 0px;
+    overflow-x:hidden;
+    overflow-y:hidden;
+    background: #000;
+    font-family: 'Cinzel', sans-serif;
+    color: #fff;
+    line-height: 1.1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;    
+}
+
+body{
+    overflow: hidden;
+    background:pink;
+}
+
+a {
+  font-weight: bold;
+  text-decoration: none;
+  color: inherit;
+}
+
+.pixiBase {
+    width:100%;
+    height:100%;
+    margin:0;
+    padding:0;
+    overflow:hidden;
+    position:absolute;
+    top:0;
+    left:0;
+    background:yellow;
+    z-index:2;
+}
+
+.threeBase {
+    width:100%;
+    height:100%;
+    margin:0;
+    padding:0;
+    overflow:hidden;
+    position:absolute;
+    top:0;
+    left:0;
+    background:yellow;
+    z-index:2;
+}
+
+.textOverlay {
+    position:absolute;
+    display:block;
+    width:100%;
+    height:50px;
+    color:white;
+    margin:0;
+    padding-left:10px;
+    padding-top:10px;
+    z-index:2;
+    overflow:hidden;
+}
+
+.guiBase {
+    width:300px;
+    margin:0;
+    padding:0;
+    overflow:hidden;
+    position:absolute;
+    top:0;
+    right:0;
+    z-index:10;
+    overflow:hidden;
+}
+
+.loader {
+    margin:0;
+    padding:0;
+    overflow:hidden;
+    position:absolute;
+    z-index:16;
+    background: rgb(96,147,174);
+    background: linear-gradient(30deg, rgba(147,165,207,1) 0%, rgba(228,239,233,1) 100%);
+    bottom: 0;
+    left: 0;
+    overflow: hidden;
+    position: fixed;
+    right: 0;
+    top: 0;
+    color:black;
+}
+
+#app {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  -webkit-transform: translate(-50%, -50%);
+          transform: translate(-50%, -50%);
+  width: 150px;
+  height: 45px;
+}
+
+#percentage {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  z-index:2;
+  text-align: center;
+  font-size: x-small;
+  padding-top:14%;
+  color:#F5E9F1;
+  text-shadow: 0.1em 0.1em 0.1em rgba(0,0,0,0.2);
+}
+
+#container {
+  width: 70px;
+  height: 35px;
+  overflow: hidden;
+  position: absolute;
+  top: calc(50% - 17px);
+  left: calc(50% - 35px);
+}
+
+#loaderBase {
+  width: 70px;
+  height: 70px;
+  border-style: solid;
+  border-top-color: #F5E9F1;
+  border-right-color: #F5E9F1;
+  border-left-color: transparent;
+  border-bottom-color: transparent;
+  border-radius: 50%;
+  box-sizing: border-box;
+  animation: rotate 3s ease-in-out infinite;
+  transform: rotate(-200deg)
+}
+
+@keyframes rotate {
+  0% { border-width: 10px; }
+  25% { border-width: 3px; }
+  50% { 
+    transform: rotate(15deg); 
+    border-width: 10px;
+  }
+  75% { border-width: 3px;}
+  100% { border-width: 10px;}
+}
+
+
+
+
+
+
+
+#ui {
+  display: flex;
+  pointer-events: none;
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  flex-direction: column;
+  padding: 1.5em;
+  gap: 1.5em;
+  z-index: 14;
+}
+
+#info {
+  color: white;
+  text-shadow: 1px 1px black;
+  border-radius: 1em;
+  margin-right: 0.5em;
+}
+
+#info a {
+  color: inherit;
+}
+
+#info p span {
+  margin-right: 0.5em;
+}
+
+#info p:last-child {
+  margin-bottom: 0;
+}
+
+.contrast #info *,
+.contrast footer * {
+  text-shadow: none;
+  color: black;
+}
+
+.contrast #info button {
+  border-color: black;
+}
+
+.contrast #info button:hover {
+  background-color: rgb(80, 80, 80);
+  color: white;
+}
+
+.ultrahigh #info {
+  background-color: rgba(255, 255, 255, 0.9);
+}
+
+#info h1 {
+  font-family: 'Cinzel', sans-serif;
+  margin-bottom: 0.5em;
+  font-size: 1.5rem;
+}
+
+#info h2 {
+  font-family: 'Cinzel', sans-serif;
+  font-size: 1rem;
+}
+
+#info p {
+  margin-bottom: 1em;
+}
+
+#info button {
+  color: inherit;
+  cursor: pointer;
+}
+
+button {
+  border: 1px solid white;
+  outline: none;
+  background: none;
+  border-radius: 3px;
+  padding: 0.5em 1em;
+  margin-right: 0.5em;
+  pointer-events: auto;
+  text-shadow: 1px 1px black;
+  font-weight: bold;
+}
+
+button:hover,
+#info button:hover {
+  background: linear-gradient(30deg, rgba(147,165,207, 0.75) 0%, rgba(228,239,233, 0.75) 100%);
+  color: black;
+  text-shadow: none;
+  transition: background 1s ease-out;  
+}
+
+#info a {
+  pointer-events: auto;
+}
+
+footer {
+  color: white;
+  text-shadow: 1px 1px black;
+  display: flex;
+  flex: 1;
+  align-items: end;
+}
+
+footer a {
+  pointer-events: auto;
+}
+
+.contact {
+  padding: 1em;
+  font-size: 2em;
+}
+
+.vignette {
+  pointer-events: none;
+  background: transparent;
+  height: 100%;
+  width: 100%;
+  box-shadow: inset 0 0 100px rgba(0,0,0,0.29);
+  position: absolute;
+  z-index:11;
+}
+
+@media (max-width: 500px) {
+  .github-corner:hover .octo-arm {
+    animation: none;
+  }
+  .github-corner .octo-arm {
+    animation: octocat-wave 560ms ease-in-out;
+  }
+}
+
+.tweak {
+  right:0;
+  width: 300px;
+  box-shadow: inset 0 0 100px rgba(0,0,0,0.29);
+  position: absolute;
+  z-index:110;
+}
