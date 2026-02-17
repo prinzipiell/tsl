@@ -1,0 +1,116 @@
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@800&display=swap');
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { margin: 0px; padding: 0px;  line-height: 1.1; font-family: 'Cinzel', sans-serif; width: 100%; height: 100%; overflow: hidden; background: #000; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+
+#c {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* ── Tweakpane host ── */
+#pane-container {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 100;
+  width: 256px;
+}
+#pane-container .tp-dfwv {
+  width: 256px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.07);
+  box-shadow: 0 8px 48px rgba(0,0,0,0.55);
+  overflow: hidden;
+}
+
+/* ── Tweakpane dark theme ── */
+:root {
+  --tp-base-background-color:             hsl(222,22%,7%);
+  --tp-base-shadow-color:                 hsla(0,0%,0%,0.35);
+  --tp-button-background-color:           hsl(222,18%,15%);
+  --tp-button-background-color-active:    hsl(222,18%,22%);
+  --tp-button-background-color-focus:     hsl(222,18%,20%);
+  --tp-button-background-color-hover:     hsl(222,18%,19%);
+  --tp-button-foreground-color:           hsl(155,90%,62%);
+  --tp-container-background-color:        hsl(222,18%,11%);
+  --tp-container-background-color-active: hsl(222,18%,15%);
+  --tp-container-background-color-focus:  hsl(222,18%,14%);
+  --tp-container-background-color-hover:  hsl(222,18%,13%);
+  --tp-container-foreground-color:        hsla(155,90%,62%,0.65);
+  --tp-groove-foreground-color:           hsl(222,18%,22%);
+  --tp-input-background-color:            hsl(222,18%,13%);
+  --tp-input-background-color-active:     hsl(222,18%,20%);
+  --tp-input-background-color-focus:      hsl(222,18%,17%);
+  --tp-input-background-color-hover:      hsl(222,18%,16%);
+  --tp-input-foreground-color:            hsl(155,90%,74%);
+  --tp-label-foreground-color:            hsl(220,16%,52%);
+  --tp-monitor-background-color:          hsl(222,18%,10%);
+  --tp-monitor-foreground-color:          hsla(155,90%,62%,0.85);
+}
+
+/* ── Vignette ── */
+#vignette {
+  pointer-events: none;
+  background: transparent;
+  height: 100%;
+  width: 100%;
+  box-shadow: inset 0 0 50px rgba(0,0,0,0.63);
+  position: fixed;
+  z-index: 98;
+}
+
+/* ── FPS counter ── */
+#fps {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  font: 500 10px/1 'Cinzel', monospace;
+  color: rgba(61,255,160,0.0);
+  letter-spacing: .08em;
+  pointer-events: none;
+  z-index: 1200;
+}
+
+/* ── Title block (top-left) ── */
+#title-block {
+  position: fixed;
+  top: 28px;
+  left: 28px;
+  z-index: 200;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+#title-eyebrow {
+  font: 400 16px/1 'Cinzel', monospace;
+  text-transform: uppercase;
+  color: #ffffff;
+  text-shadow: 2px 2px 6px rgba(0,0,0,0.8);
+}
+#title-headline {
+  font: 600 28px/1 'Cinzel', system-ui, sans-serif;
+  color: #ffffff;
+  text-shadow: 3px 3px 10px rgba(0,0,0,0.8);
+}
+
+/* ── Nav link (bottom-left) ── */
+#nav-prev {
+  position: fixed;
+  bottom: 28px;
+  left: 28px;
+  z-index: 200;
+  font: 400 14px/1 'Cinzel', monospace;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  color: #ffffff;
+  text-decoration: none;
+  text-shadow: 2px 2px 6px rgba(0,0,0,0.8);
+}
+#nav-prev:hover {
+  text-shadow: 3px 3px 10px rgba(0,0,0,0.9);
+}
