@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Learning TSL: CDAK TSL Port.</title>
+<link rel="stylesheet" href="styles/style.css"/>
+</head>
+<body>
+<div id="pane-container"></div>
+<div id="vignette"></div>
+<div id="fps">-- fps</div>
+<div id="title-block">
+  <span id="title-eyebrow">Tinker Day #31</span>
+  <span id="title-headline">CDAK TSL Port.</span>
+</div>
+<div id="title-text" style="">TSL port of the well-known demoscene 4k intro cdak (<i><a href="http://bit.ly/4saNuPj" target="_blank">http://bit.ly/4saNuPj</a></i>) by ´Quite´ and ´orange´.<br><br>Original hlsl sources: <i><a href="https://bit.ly/3NiYMl6" target="_blank">https://bit.ly/3NiYMl6</a></i><br/></div>
+<a id="nav-prev" href="https://dasprinzip.com/tinker/day30/">&larr; The Day Before.</a></footer>
+<div id="loading">COMPILING…</div>
+
+<script async src="https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.js"></script>
+<script type="importmap">
+{
+  "imports": {
+    "three":        "https://cdn.jsdelivr.net/npm/three@0.183.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.183.0/build/three.webgpu.js",
+    "three/tsl":    "https://cdn.jsdelivr.net/npm/three@0.183.0/build/three.tsl.js"
+  }
+}
+</script>
+<script type="module" src="main.js"></script>
+</body>
+</html>
