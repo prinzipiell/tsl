@@ -470,8 +470,8 @@ canvas.addEventListener('mousedown',e=>{drag=true;dx0=e.clientX;df0=fp;wb=0;wbv=
 canvas.addEventListener('touchstart',e=>{drag=true;dx0=e.touches[0].clientX;df0=fp;wb=0;wbv=0;e.preventDefault();},{passive:false});
 window.addEventListener('mousemove',e=>{if(!drag)return;const W=canvas.getBoundingClientRect().width*0.834;ft=Math.max(0.35,Math.min(0.94,df0+(e.clientX-dx0)/W));});
 window.addEventListener('touchmove',e=>{if(!drag)return;const W=canvas.getBoundingClientRect().width*0.834;ft=Math.max(0.35,Math.min(0.94,df0+(e.touches[0].clientX-dx0)/W));e.preventDefault();},{passive:false});
-window.addEventListener('mouseup',()=>{if(drag){drag=false;wbv=fv*18;}});
-window.addEventListener('touchend',()=>{if(drag){drag=false;wbv=fv*18;}});
+window.addEventListener('mouseup',()=>{if(drag){drag=false;wbv=fv*22;}});
+window.addEventListener('touchend',()=>{if(drag){drag=false;wbv=fv*22;}});
 
 // ── Render loop ──────────────────────────────────────────
 let prev=performance.now();
@@ -480,11 +480,11 @@ let firstFrame = true;
 function frame(now){
   requestAnimationFrame(frame);
   const dt=Math.min((now-prev)*.001,.05); prev=now;
-  fv+=((ft-fp)*290-fv*38)*dt; fp+=fv*dt;
-  if(fp<0.35){fp=0.35;fv=Math.max(fv,0);} // hard stop, kill downward velocity
+  fv+=((ft-fp)*300-fv*28)*dt; fp+=fv*dt;
+  if(fp<0.35){fp=0.35;fv=Math.max(fv,0);} // hard stop
   if(fp>0.94){fp=0.94;fv=Math.min(fv,0);}
-  sqv+=((fv*.52-sq)*150-sqv*13)*dt; sq+=sqv*dt; sq=Math.max(-1.5,Math.min(1.5,sq));
-  wbv+=(-wb*125-wbv*8)*dt; wb+=wbv*dt; wb=Math.max(-1.0,Math.min(1.0,wb));
+  sqv+=((fv*.65-sq)*160-sqv*11)*dt; sq+=sqv*dt; sq=Math.max(-1.5,Math.min(1.5,sq));
+  wbv+=(-wb*110-wbv*6)*dt; wb+=wbv*dt; wb=Math.max(-1.0,Math.min(1.0,wb));
   const pct=Math.round((fp-0.35)/0.59*100);
   if(pct!==lastPct){lastPct=pct;updateTextTexture(pct);}
   u.fill.value=fp; u.squeeze.value=sq; u.wobble.value=wb;
@@ -499,7 +499,7 @@ const shadowLight={x:-0.43,y:0.19,z:-0.43};
 const cam={x:0.0,y:1.35,z:0.9};
 const areaLights={bg:1.50,groove:0.89};
 import('https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.min.js').then(({Pane})=>{
-  const pane=new Pane({title:'Controls', expanded: false});
+  const pane=new Pane({title:'Controls',expanded:false});
   pane.element.style.position='fixed';pane.element.style.top='16px';pane.element.style.right='16px';pane.element.style.zIndex='100';pane.element.style.width='240px';
   const updateLight=()=>u.light.value.set(light.x,light.y,light.z);
   const lf=pane.addFolder({title:'Light Direction',expanded:true});
