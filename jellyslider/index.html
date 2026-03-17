@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Learning TSL: Jelly Slider.</title>
+<link rel="stylesheet" href="styles/style.css"/>
+</head>
+<body>
+<div id="pane-container"></div>
+<div id="vignette"></div>
+<div id="title-block">
+  <span id="title-eyebrow">Tinker Day #32</span>
+  <span id="title-headline">Jelly Slider.</span>
+  <p>
+    Drag the jelly slider<br />forth and back.
+  </p>  
+</div>
+<footer><a id="nav-prev" href="https://dasprinzip.com/tinker/day31/">&larr; The Day Before.</a></footer>
+<div id="loader"><div class="spinner"></div><div class="loading-text">loading<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></div></div>
+<div id="log"></div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.webgpu.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="main.js"></script>
+</body>
+</html>
