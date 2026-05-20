@@ -297,7 +297,7 @@ let envMapTexture = null;
 	}
 	try {
 		new RGBELoader().load(
-			"./AdobeStock_326519034.hdr",
+			"./ferndale_studio_12_1k.hdr",
 			(hdr) => {
 				hdr.mapping = THREE.EquirectangularReflectionMapping;
 				const envRT = pmrem.fromEquirectangular(hdr);
