@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="en" style="user-select:none;-webkit-user-select:none;">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Learning TSL: Silicon Jelly.</title>
+<link rel="stylesheet" href="styles/style.css"/>
+</head>
+<body>
+
+<div id="pane-container"></div>
+<div id="vignette"></div>
+<div id="title-block">
+  <span id="title-eyebrow">Tinker Day #34</span>
+  <span id="title-headline">Silicon Jelly.</span>
+  <p>
+    Click and drag to move the camera.<br />
+  </p>
+</div>
+<footer><a id="nav-prev" href="https://dasprinzip.com/tinker/day33/">&larr; The Day Before.</a></footer>
+<div id="loader"><div class="spinner"></div><div class="loading-text">loading<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></div></div>
+<div id="log"></div>	
+<canvas id="canvas"></canvas>
+<script type="importmap">{ "imports": {
+	"three": "https://cdn.jsdelivr.net/npm/three@0.178.0/build/three.webgpu.min.js",
+	"three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.178.0/build/three.webgpu.min.js",
+	"three/tsl": "https://cdn.jsdelivr.net/npm/three@0.178.0/build/three.tsl.js",
+	"three/addons/": "https://cdn.jsdelivr.net/npm/three@0.178.0/examples/jsm/"
+}}</script>
+<script type="module">
+import * as THREE from "three/webgpu";
+import {
+	Fn, If, uniform, uv, texture, time,
+	float, vec2, vec3, vec4,
+	floor, fract, negate, step, smoothstep, length, abs, max, min, clamp, mix, dot, cos, sin, pow, normalize,
+	instanceIndex, positionLocal, normalLocal, positionWorld,
+	mx_noise_float
+} from "three/tsl";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
+import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
+import { Pane } from "https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.min.js";
+
+async function main() {
+
+let W = window.innerWidth;
+let H = window.innerHeight;
+const MAX_N = 100000;
+const S = 0.15;
+const YY = 10;
+const CUBE_HALF = 8;
+const CUBE_Y = CUBE_HALF;
+
+const can = document.getElementById("canvas");
+const dpr = Math.min(window.devicePixelRatio, 2);
+
+const ren = new THREE.WebGPURenderer({ canvas: can, antialias: true });
+await ren.init();
+ren.setPixelRatio(dpr);
+ren.setSize(W, H);
+ren.autoClear = false;
+
+const cam = new THREE.PerspectiveCamera(60, W / H, 0.1, 1000);
+cam.position.set(32, 12, 26);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x000000);
+const glassScene = new THREE.Scene();
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  TSL uniforms — driven by Tweakpane PARAMS
+// ═══════════════════════════════════════════════════════════════════
+
+const ctr = {
+	lift: 50, particleHue: 59, zoom: 35,
+	bgTop: { r: 0.82, g: 0.80, b: 0.75 },
+	bgBottom: { r: 0.62, g: 0.60, b: 0.52 },
+	transmission: 1.0, ior: 1.21, thickness: 5,
+	wobble: 1.30, envMapIntensity: 1.0,
+	glassColor: { r: 0.94, g: 0.91, b: 1.00 },
+	normalScale: 0.24
+};
+let activeN = 6000;
+
+const pane = new Pane({ title: "Controls" });
+const fScene = pane.addFolder({ title: "Scene" });
+fScene.addBinding(ctr, "lift", { min: 0, max: 100, step: 1 });
+fScene.addBinding(ctr, "particleHue", { min: 0, max: 100, step: 1, label: "particle hue" });
+fScene.addBinding(ctr, "bgTop", { color: { type: "float" }, label: "bg top" });
+fScene.addBinding(ctr, "bgBottom", { color: { type: "float" }, label: "bg bottom" });
+const zoomBinding = fScene.addBinding(ctr, "zoom", { min: 10, max: 60, step: 1 });
+let zoomFromSlider = false;
+zoomBinding.on("change", (ev) => { if (ev.last) zoomFromSlider = true; });
+const fGlass = pane.addFolder({ title: "Glass" });
+fGlass.addBinding(ctr, "transmission", { min: 0, max: 1, step: 0.01 });
+fGlass.addBinding(ctr, "ior", { min: 1.0, max: 2.5, step: 0.01 });
+fGlass.addBinding(ctr, "thickness", { min: 0, max: 5, step: 0.1 });
+fGlass.addBinding(ctr, "wobble", { min: 0, max: 3, step: 0.01 });
+fGlass.addBinding(ctr, "envMapIntensity", { min: 0, max: 3, step: 0.02, label: "env intensity" });
+fGlass.addBinding(ctr, "glassColor", { color: { type: "float" }, label: "color" });
+fGlass.addBinding(ctr, "normalScale", { min: -1, max: 1, step: 0.01, label: "normal scale" });
+
+const uTimeVal = uniform(0);
+const uWobble = uniform(1.30);
+const uCamDist = uniform(20.0);
+const uHue = uniform(0.0);
+const uRes = uniform(new THREE.Vector2(dpr * W, dpr * H));
+const uBgTop = uniform(new THREE.Color(0.82, 0.80, 0.75));
+const uBgBottom = uniform(new THREE.Color(0.62, 0.60, 0.52));
+const uEnvBg = uniform(0.0);
+
+let _glassMat = null;
+function linkGlassMat(mat) { _glassMat = mat; syncGlass(); }
+function syncGlass() {
+	if (!_glassMat) return;
+	_glassMat.transmission = ctr.transmission;
+	_glassMat.ior = ctr.ior;
+	_glassMat.thickness = ctr.thickness;
+	_glassMat.color.setRGB(ctr.glassColor.r, ctr.glassColor.g, ctr.glassColor.b);
+	_glassMat.normalScale.set(ctr.normalScale, ctr.normalScale);
+	uWobble.value = ctr.wobble;
+	const ei = ctr.envMapIntensity;
+	_glassMat.envMapIntensity = ei;
+	scene.environmentIntensity = ei;
+	glassScene.environmentIntensity = ei;
+	if (tkMat) tkMat.envMapIntensity = ei;
+	// Force material update
+	_glassMat.needsUpdate = true;
+}
+
+const controls = new OrbitControls(cam, can);
+controls.minPolarAngle = 0.1;
+controls.maxPolarAngle = Math.PI / 2 - 0.05;
+controls.target.set(0, CUBE_Y, 0);
+controls.minDistance = 10;
+controls.maxDistance = 60;
+controls.update();
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  render targets
+// ═══════════════════════════════════════════════════════════════════
+
+const rt = new THREE.RenderTarget(dpr * W, dpr * H, { type: THREE.HalfFloatType });
+rt.depthTexture = new THREE.DepthTexture();
+const rt2 = new THREE.RenderTarget(dpr * W, dpr * H);
+const rtBg = new THREE.RenderTarget(dpr * W, dpr * H); // env map background capture
+glassScene.background = rt2.texture;
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+// background-only scene: just renders env map from camera perspective
+// ═══════════════════════════════════════════════════════════════════
+
+const bgScene = new THREE.Scene();
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+// post-process quad (pure TSL)
+// ═══════════════════════════════════════════════════════════════════
+
+const postMat = new THREE.NodeMaterial();
+postMat.depthTest = false;
+postMat.depthWrite = false;
+
+postMat.fragmentNode = Fn(() => {
+	const rawUv = uv();
+	const w = vec2(rawUv.x, float(1).sub(rawUv.y));
+	const d = texture(rt.texture, w).rgb;
+	const px = vec2(float(1).div(uRes.x), float(1).div(uRes.y));
+
+	const bgTop = vec3(uBgTop.x, uBgTop.y, uBgTop.z);
+	const bgBottom = vec3(uBgBottom.x, uBgBottom.y, uBgBottom.z);
+	const gradientBG = mix(bgBottom, bgTop, w.y);
+	// Sample the env map background capture (will be black if no env map)
+	const envBgSample = texture(rtBg.texture, w).rgb;
+	const envBgBrightness = envBgSample.x.add(envBgSample.y).add(envBgSample.z);
+	// Use env map bg if it has content, otherwise gradient
+	const BG = mix(gradientBG, envBgSample, step(float(0.01), envBgBrightness).mul(uEnvBg));
+
+	const NEAR = float(0.1);
+	const FAR = float(1000);
+	const rawDepth = texture(rt.depthTexture, w).r;
+	const linDepth = NEAR.mul(FAR).div(FAR.sub(FAR.sub(NEAR).mul(rawDepth)));
+	const fog = clamp(linDepth.sub(20).mul(0.02), 0, 1);
+
+	const a0 = d.b.mul(1.05).div(d.b.add(0.05));
+	const nrRaw = texture(rt.texture, w.add(vec2(px.x, 0))).b;
+	const ndRaw = texture(rt.texture, w.sub(vec2(0, px.y))).b;
+	const nr = nrRaw.mul(1.05).div(nrRaw.add(0.05));
+	const nd = ndRaw.mul(1.05).div(ndRaw.add(0.05));
+	const n = normalize(vec3(a0.sub(nr), a0.sub(nd), 0.01));
+
+	const c = vec3(0).toVar();
+	const solidAmount = max(d.r, d.g);
+	const liquidAmount = d.b;
+
+	If(liquidAmount.greaterThan(0.3), () => {
+		const behind = texture(rt.texture, w.add(n.xy.mul(0.02))).r;
+		const refracted = mix(behind, BG.x, fog);
+		const baseColor = vec3(0.0, 0.969, 1.0);
+		const hueShift = cos(vec3(0, 2, 4).sub(uHue).add(liquidAmount.mul(0.5))).mul(0.2).add(0.8);
+		const brightness = max(refracted, float(0.5));
+		c.assign(baseColor.mul(hueShift).mul(brightness));
+		c.assign(c.mul(float(1).div(float(1).add(liquidAmount.mul(0.15)))));
+		const spec = smoothstep(0.94, 1.0, dot(n, vec3(0.3, 0.3, 0.9)));
+		c.assign(c.add(vec3(0.7, 1.0, 1.0).mul(spec)));
+		const fogL = clamp(uCamDist.sub(20).mul(0.02), 0, 1);
+		c.assign(mix(c, BG, fogL));
+	}).ElseIf(solidAmount.greaterThan(0.01), () => {
+		const base = d.rgb.mul(vec3(1.1, 1.05, 0.95));
+		c.assign(mix(base, BG, fog));
+	}).Else(() => {
+		c.assign(BG);
+	});
+
+	c.assign(c.mul(c));
+	return vec4(c, 1);
+})();
+
+const postQuad = new THREE.QuadMesh(postMat);
+
+
+// ═══════════════════════════════════════════════════════════════════
+// set light(s)
+// ═══════════════════════════════════════════════════════════════════
+
+function makeLights(targetScene) {
+	targetScene.add(new THREE.AmbientLight(0xffffff, 1.5));
+	const d = new THREE.DirectionalLight(0xffffff, 2.0);
+	d.position.set(20, 30, -10);
+	d.castShadow = true;
+	d.shadow.mapSize.set(512, 512);
+	d.shadow.normalBias = 0.2;
+	d.shadow.camera.left = -10; d.shadow.camera.right = 10;
+	d.shadow.camera.top = 20; d.shadow.camera.bottom = 0;
+	d.shadow.camera.near = 0.01; d.shadow.camera.far = 100;
+	targetScene.add(d);
+	targetScene.add(new THREE.DirectionalLight(0xffffff, 0.8).translateX(-2).translateY(3).translateZ(1));
+	targetScene.add(new THREE.DirectionalLight(0xffeedd, 0.6).translateX(-10).translateY(10).translateZ(15));
+}
+makeLights(scene);
+makeLights(glassScene);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+// environment map
+// ═══════════════════════════════════════════════════════════════════
+
+let envMapLoaded = false;
+let envMapTexture = null;
+
+{
+	const pmrem = new THREE.PMREMGenerator(ren);
+	function applyEnvMap(envTexture, isHDR) {
+		glassScene.environment = envTexture;
+		scene.environment = envTexture;
+		bgScene.environment = envTexture;
+		bgScene.background = envTexture;
+		if (isHDR) {
+			envMapLoaded = true;
+			envMapTexture = envTexture;
+			uEnvBg.value = 1.0;
+		}
+		glassScene.background = rt2.texture;
+	}
+	function createProceduralEnv() {
+		// Make a stronger, more visible procedural env map
+		const envScene = new THREE.Scene();
+		const envMat = new THREE.NodeMaterial();
+		envMat.side = THREE.BackSide;
+		envMat.fragmentNode = Fn(() => {
+			const dir = normalize(positionWorld);
+			const t = dir.y.mul(0.5).add(0.5);
+			// Brighter sky gradient with strong contrast
+			const c = mix(vec3(0.3, 0.25, 0.2), vec3(0.95, 0.92, 0.85), smoothstep(0.0, 0.5, t)).toVar();
+			c.assign(mix(c, vec3(0.85, 0.9, 1.0), smoothstep(0.5, 1.0, t)));
+			// Bright sun spots for visible reflections
+			const sun1 = pow(max(dot(dir, normalize(vec3(1, 0.8, -0.5))), 0), 32);
+			const sun2 = pow(max(dot(dir, normalize(vec3(-0.8, 0.3, 0.7))), 0), 16);
+			const sun3 = pow(max(dot(dir, normalize(vec3(0.2, -0.4, -0.9))), 0), 24);
+			c.assign(c.add(vec3(1.5, 1.3, 1.0).mul(sun1)));
+			c.assign(c.add(vec3(0.5, 0.6, 0.8).mul(sun2)));
+			c.assign(c.add(vec3(0.8, 0.7, 0.5).mul(sun3)));
+			return vec4(c, 1);
+		})();
+		envScene.add(new THREE.Mesh(new THREE.SphereGeometry(50, 32, 16), envMat));
+		const envRT = pmrem.fromScene(envScene);
+		applyEnvMap(envRT.texture, false);
+		pmrem.dispose();
+	}
+	try {
+		new RGBELoader().load(
+			"./AdobeStock_326519034.hdr",
+			(hdr) => {
+				hdr.mapping = THREE.EquirectangularReflectionMapping;
+				const envRT = pmrem.fromEquirectangular(hdr);
+				applyEnvMap(envRT.texture, true);
+				hdr.dispose();
+				pmrem.dispose();
+			},
+			undefined,
+			(err) => { console.error("❌ HDR load failed:", err); }
+		);
+	} catch(e) { console.error("❌ HDR load exception:", e); }
+
+	// Always create procedural env map immediately (HDR replaces it if/when it loads)
+	createProceduralEnv();
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+// torus knot colliders
+// ═══════════════════════════════════════════════════════════════════
+
+const tkR = 3, tkTube = 0.9, tkP = 2, tkQ = 3;
+const nCol = 60;
+const colR = 1.3;
+const colLocal = new Float32Array(nCol * 3);
+for (let ci = 0; ci < nCol; ci++) {
+	const t = ci / nCol * Math.PI * 2 * tkP;
+	const rr = tkR + tkTube * Math.cos(tkQ * t / tkP);
+	colLocal[ci*3] = rr * Math.cos(t);
+	colLocal[ci*3+1] = tkTube * Math.sin(tkQ * t / tkP);
+	colLocal[ci*3+2] = rr * Math.sin(t);
+}
+const colWorld = new Float32Array(nCol * 3);
+const tk = { x:0, y:YY, z:0, vx:0, vy:0, vz:0, rotY:0, wY:4, rotX:0, wX:1.7 };
+
+function updateColWorld() {
+	const cy=Math.cos(tk.rotY),sy=Math.sin(tk.rotY),cx=Math.cos(tk.rotX),sx=Math.sin(tk.rotX);
+	for(let i=0;i<nCol;i++){const j=i*3,lx=colLocal[j],ly=colLocal[j+1],lz=colLocal[j+2];
+	colWorld[j]=cy*lx+sy*sx*ly+sy*cx*lz+tk.x;colWorld[j+1]=cx*ly-sx*lz+tk.y;colWorld[j+2]=-sy*lx+cy*sx*ly+cy*cx*lz+tk.z;}
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+// particles
+// ═══════════════════════════════════════════════════════════════════
+
+const ppx=new Float32Array(MAX_N),ppy=new Float32Array(MAX_N),ppz=new Float32Array(MAX_N);
+const pvx=new Float32Array(MAX_N),pvy=new Float32Array(MAX_N),pvz=new Float32Array(MAX_N);
+for(let i=0;i<MAX_N;i++){const a=2.4*i,r=5*Math.sqrt(Math.random());ppx[i]=r*Math.cos(a);ppy[i]=15+10*i/MAX_N;ppz[i]=r*Math.sin(a);}
+
+const WC=128;
+const posData=new Float32Array(4*WC*WC);
+const tex_pos=new THREE.DataTexture(posData,WC,WC,THREE.RGBAFormat,THREE.FloatType);
+tex_pos.wrapS=THREE.RepeatWrapping;
+
+const n_idx=float(instanceIndex);
+const spriteMat=new THREE.SpriteNodeMaterial();
+spriteMat.positionNode=texture(tex_pos,vec2(n_idx,floor(n_idx.mul(1.0/WC))).add(0.5).mul(1.0/WC)).xyz;
+spriteMat.colorNode=vec4(0,0,smoothstep(float(-0.5),float(0.1666),negate(length(uv().sub(0.5)))),1);
+spriteMat.scaleNode=uniform(3.5);
+spriteMat.depthWrite=false;
+spriteMat.transparent=true;
+spriteMat.blending=THREE.AdditiveBlending;
+
+const spriteMesh=new THREE.Mesh(new THREE.PlaneGeometry(0.2,0.2),spriteMat);
+spriteMesh.isInstancedMesh=true;
+spriteMesh.count=activeN;
+spriteMesh.frustumCulled=false;
+scene.add(spriteMesh);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+// torus knot mesh
+// ═══════════════════════════════════════════════════════════════════
+
+const objGroup=new THREE.Group();
+objGroup.matrixAutoUpdate=false;
+scene.add(objGroup);
+const tkMat=new THREE.MeshStandardNodeMaterial();
+tkMat.color=new THREE.Color(0xf5e6c8);
+tkMat.roughness=0.2;tkMat.metalness=0.15;tkMat.side=THREE.DoubleSide;
+const tkMesh=new THREE.Mesh(new THREE.TorusKnotGeometry(tkR,tkTube,128,32,tkP,tkQ),tkMat);
+tkMesh.castShadow=tkMesh.receiveShadow=true;
+objGroup.add(tkMesh);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+// glass cube (rounded box + TSL wobble)
+// ═══════════════════════════════════════════════════════════════════
+
+let cubeGeo=new THREE.BoxGeometry(CUBE_HALF*2,CUBE_HALF*2,CUBE_HALF*2,64,64,64);
+{const pos=cubeGeo.getAttribute('position');const r=3.5,h=CUBE_HALF;
+for(let i=0;i<pos.count;i++){let x=pos.getX(i),y=pos.getY(i),z=pos.getZ(i);
+const ix=Math.min(Math.abs(x),h-r)*Math.sign(x),iy=Math.min(Math.abs(y),h-r)*Math.sign(y),iz=Math.min(Math.abs(z),h-r)*Math.sign(z);
+const dx=x-ix,dy=y-iy,dz=z-iz,dl=Math.sqrt(dx*dx+dy*dy+dz*dz);
+if(dl>0.001){x=ix+dx*(r/dl);y=iy+dy*(r/dl);z=iz+dz*(r/dl);}
+pos.setXYZ(i,x,y,z);}pos.needsUpdate=true;cubeGeo=mergeVertices(cubeGeo,0.01);cubeGeo.computeVertexNormals();}
+
+
+// ── Pre-load speckle normal map BEFORE creating glass material ──
+const speckleTex = await new Promise((resolve) => {
+	const img = new Image();
+	img.onload = () => {
+		const tex = new THREE.Texture(img);
+		tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+		tex.repeat.set(6, 6);
+		tex.needsUpdate = true;
+		resolve(tex);
+	};
+	img.onerror = () => {
+		const d = new Uint8Array([128, 128, 255, 255]);
+		const tex = new THREE.DataTexture(d, 1, 1, THREE.RGBAFormat);
+		tex.needsUpdate = true;
+		resolve(tex);
+	};
+	img.src = "./seDv-flakes.png"
+});
+
+const glassMat = new THREE.MeshPhysicalNodeMaterial();
+glassMat.color = new THREE.Color(0.94, 0.91, 1.00);
+glassMat.metalness = 0.0;
+glassMat.roughness = 0.0;
+glassMat.transmission = 1.0;
+glassMat.thickness = 5;
+glassMat.ior = 1.21;
+glassMat.transparent = true;
+glassMat.side = THREE.FrontSide;
+glassMat.envMapIntensity = 1.0;
+glassMat.attenuationColor = new THREE.Color(1.0, 1.0, 1.0);
+glassMat.attenuationDistance = 100;
+glassMat.specularIntensity = 1.0;
+glassMat.depthWrite = false;
+// Normal map set BEFORE first render so shader compiles with support
+glassMat.normalMap = speckleTex;
+glassMat.normalScale = new THREE.Vector2(1.0, 1.0);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+// TSL wobble
+// ═══════════════════════════════════════════════════════════════════
+
+glassMat.positionNode = Fn(() => {
+	const pos = positionLocal.toVar();
+	const np = pos.mul(0.12);
+	const t = uTimeVal;
+	const n1 = mx_noise_float(np.add(t.mul(0.3))).mul(0.5).mul(uWobble);
+	const n2 = mx_noise_float(np.mul(2.5).add(t.mul(0.5)).add(7)).mul(0.2).mul(uWobble);
+	const n3 = mx_noise_float(np.mul(5).add(t.mul(0.8)).add(13)).mul(0.1).mul(uWobble);
+	const displacement = n1.add(n2).add(n3);
+	const squash = sin(t.mul(0.4)).mul(0.08).mul(uWobble);
+	const breathe = sin(t.mul(0.7).add(pos.y.mul(0.3))).mul(0.12).mul(uWobble);
+	pos.assign(pos.add(normalLocal.mul(displacement.add(breathe))));
+	pos.y.addAssign(pos.y.mul(squash));
+	return pos;
+})();
+
+const glassCube = new THREE.Mesh(cubeGeo, glassMat);
+glassCube.position.set(0, CUBE_Y, 0);
+glassScene.add(glassCube);
+linkGlassMat(glassMat);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+// contact shadow (TSL, wobble-synced)
+// ═══════════════════════════════════════════════════════════════════
+
+const shadowGeo = new THREE.PlaneGeometry(CUBE_HALF * 3, CUBE_HALF * 3, 32, 32);
+const shadowMat = new THREE.NodeMaterial();
+shadowMat.transparent = true;
+shadowMat.depthWrite = false;
+shadowMat.side = THREE.DoubleSide;
+
+shadowMat.positionNode = Fn(() => {
+	const pos = positionLocal.toVar();
+	const np = pos.mul(0.12);
+	const t = uTimeVal;
+	const n1 = mx_noise_float(np.add(t.mul(0.3))).mul(0.5).mul(uWobble);
+	const n2 = mx_noise_float(np.mul(2.5).add(t.mul(0.5)).add(7)).mul(0.2).mul(uWobble);
+	const breathe = sin(t.mul(0.7).add(pos.y.mul(0.3))).mul(0.12).mul(uWobble);
+	const squash = sin(t.mul(0.4)).mul(0.08).mul(uWobble);
+	const dir = normalize(pos.xz.add(0.001));
+	const disp = n1.add(n2).add(breathe);
+	pos.x.addAssign(dir.x.mul(disp));
+	pos.z.addAssign(dir.y.mul(disp));
+	pos.x.addAssign(pos.x.mul(squash));
+	pos.z.addAssign(pos.z.mul(squash.mul(0.5)));
+	return pos;
+})();
+
+shadowMat.fragmentNode = Fn(() => {
+	const w = uv();
+	const d = length(w.sub(0.5)).mul(2);
+	const shadow = smoothstep(float(0.85), float(0.0), d);
+	const sq = abs(w.sub(0.5)).mul(2);
+	const box = max(sq.x, sq.y);
+	const boxShadow = smoothstep(float(0.95), float(0.5), box);
+	const final_s = mix(shadow, boxShadow, float(0.5));
+	return vec4(0, 0, 0, final_s.mul(0.85));
+})();
+
+const shadowPlane = new THREE.Mesh(shadowGeo, shadowMat);
+shadowPlane.rotation.x = -Math.PI / 2;
+shadowPlane.position.set(0, -0.5, 0);
+glassScene.add(shadowPlane);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+// render/animation loop
+// ═══════════════════════════════════════════════════════════════════
+
+ren.setAnimationLoop(function tic() {
+
+	const dt = 1 / 60;
+	const n = activeN;
+
+	uTimeVal.value += dt;
+	syncGlass();
+	uCamDist.value = cam.position.length();
+	uHue.value = ctr.particleHue * Math.PI * 2 / 100;
+	uBgTop.value.setRGB(ctr.bgTop.r, ctr.bgTop.g, ctr.bgTop.b);
+	uBgBottom.value.setRGB(ctr.bgBottom.r, ctr.bgBottom.g, ctr.bgBottom.b);
+
+	if (zoomFromSlider) {
+		const zoomDist = ctr.zoom;
+		const dir = cam.position.clone().sub(controls.target).normalize();
+		cam.position.copy(controls.target).addScaledVector(dir, zoomDist);
+		controls.update();
+		zoomFromSlider = false;
+	} else {
+		const dist = cam.position.distanceTo(controls.target);
+		ctr.zoom = Math.round(Math.max(10, Math.min(60, dist)));
+		zoomBinding.refresh();
+	}
+
+	// torus knot dynamics
+	const liftFrac = ctr.lift / 100;
+	const targetY = 3 + liftFrac * (CUBE_HALF * 2 - 6);
+	const fountainStrength = 0.5 + liftFrac * 2.0;
+	tk.vy -= 10 * dt;
+	tk.vy += (targetY - tk.y) * 3.0 * dt;
+	tk.vx = 0.9 * tk.vx - 50 * tk.x * dt;
+	tk.vz = 0.9 * tk.vz - 50 * tk.z * dt;
+	tk.vy *= 0.96;
+	tk.x += tk.vx * dt;
+	tk.y += tk.vy * dt;
+	tk.z += tk.vz * dt;
+	if (tk.y < 3) { tk.y = 3; tk.vy *= -0.3; }
+
+	const tkMax = CUBE_HALF - 3;
+	tk.x = Math.max(-tkMax, Math.min(tkMax, tk.x));
+	tk.z = Math.max(-tkMax, Math.min(tkMax, tk.z));
+	if (tk.y > CUBE_Y + tkMax) { tk.y = CUBE_Y + tkMax; tk.vy *= -0.3; }
+	if (tk.y < CUBE_Y - tkMax) { tk.y = CUBE_Y - tkMax; tk.vy *= -0.3; }
+
+	tk.rotY += tk.wY * dt;
+	tk.rotX += tk.wX * dt;
+
+	const cy = Math.cos(tk.rotY), sy = Math.sin(tk.rotY);
+	const cx = Math.cos(tk.rotX), sx = Math.sin(tk.rotX);
+	objGroup.matrix.set(
+		cy, sy*sx, sy*cx, tk.x,
+		0, cx, -sx, tk.y,
+		-sy, cy*sx, cy*cx, tk.z,
+		0, 0, 0, 1
+	);
+	updateColWorld();
+
+	// particle physics
+	const u = tk.y - 5;
+	let p = 0;
+
+	for (let i = 0; i < n; i++) {
+		pvy[i] -= 10 * dt;
+		pvx[i] *= 0.985; pvy[i] *= 0.985; pvz[i] *= 0.985;
+		ppx[i] += pvx[i] * dt;
+		ppy[i] += pvy[i] * dt;
+		ppz[i] += pvz[i] * dt;
+
+		const cubeBottom = CUBE_Y - CUBE_HALF + S + 0.5;
+		if (ppy[i] < cubeBottom) { ppy[i] = cubeBottom; pvy[i] *= -0.3; pvx[i] *= 0.9; pvz[i] *= 0.9; }
+
+		const RC = 3.2, hh = CUBE_HALF - S - 0.3;
+		let rx = ppx[i], ry = ppy[i] - CUBE_Y, rz = ppz[i];
+		const inner = hh - RC;
+		const ccx = Math.max(Math.abs(rx) - inner, 0);
+		const ccy = Math.max(Math.abs(ry) - inner, 0);
+		const ccz = Math.max(Math.abs(rz) - inner, 0);
+		const cd = Math.sqrt(ccx*ccx + ccy*ccy + ccz*ccz);
+		if (cd > RC) {
+			const scale = RC / cd;
+			ppx[i] = Math.sign(rx) * (inner + ccx * scale);
+			ppy[i] = Math.sign(ry) * (inner + ccy * scale) + CUBE_Y;
+			ppz[i] = Math.sign(rz) * (inner + ccz * scale);
+			const nx = ccx > 0 ? Math.sign(rx)*ccx/cd : 0;
+			const ny = ccy > 0 ? Math.sign(ry)*ccy/cd : 0;
+			const nz = ccz > 0 ? Math.sign(rz)*ccz/cd : 0;
+			const vdn = pvx[i]*nx + pvy[i]*ny + pvz[i]*nz;
+			if (vdn > 0) { pvx[i] -= 1.4*vdn*nx; pvy[i] -= 1.4*vdn*ny; pvz[i] -= 1.4*vdn*nz; }
+		}
+		if (ppy[i] < cubeBottom) ppy[i] = cubeBottom;
+
+		const x = ppx[i], y = ppy[i], z = ppz[i];
+		posData[p++] = x; posData[p++] = y; posData[p++] = z; p++;
+
+		const rr = x*x + z*z;
+		if (rr < 3) {
+			if (y < 5 || y < u) {
+				pvy[i] += fountainStrength / Math.max(2, rr) * (1 - y / (CUBE_HALF * 2));
+			} else {
+				pvx[i] += 0.25 * sy; pvz[i] += 0.25 * cy;
+			}
+		} else if (y < 1) {
+			const f = 0.15 / Math.max(1, Math.min(30, rr));
+			pvx[i] -= f * x; pvy[i] += 0.05; pvz[i] -= f * z;
+		}
+
+		for (let ci = 0; ci < nCol; ci++) {
+			const j = ci * 3;
+			const dx = x - colWorld[j], dy = y - colWorld[j+1], dz = z - colWorld[j+2];
+			const d2 = dx*dx + dy*dy + dz*dz;
+			if (d2 < colR*colR && d2 > 0.0001) {
+				const dd = Math.sqrt(d2), inv = 1/dd;
+				const nnx = dx*inv, nny = dy*inv, nnz = dz*inv;
+				ppx[i] += nnx*(colR-dd)*0.5; ppy[i] += nny*(colR-dd)*0.5; ppz[i] += nnz*(colR-dd)*0.5;
+				const vdn = pvx[i]*nnx + pvy[i]*nny + pvz[i]*nnz;
+				if (vdn < 0) { pvx[i] -= 1.3*vdn*nnx; pvy[i] -= 1.3*vdn*nny; pvz[i] -= 1.3*vdn*nnz; }
+				pvx[i] += sy*0.5*dt; pvz[i] += cy*0.5*dt;
+				break;
+			}
+		}
+	}
+	tex_pos.needsUpdate = true;
+
+	// render pipeline
+	// Pass 0: render env map background into rtBg
+	ren.setRenderTarget(rtBg);
+	ren.clear();
+	ren.renderAsync(bgScene, cam);
+
+	// Pass 1: inner scene → rt
+	ren.setRenderTarget(rt);
+	ren.clear();
+	ren.renderAsync(scene, cam);
+
+	// Pass 2: post-process → rt2 (colors particles cyan, torus warm, bg gradient or passthrough)
+	ren.setRenderTarget(rt2);
+	ren.clear();
+	postQuad.renderAsync(ren);
+
+	// Pass 3: glass scene → screen (glass cube sees rt2 as background for transmission)
+	ren.setRenderTarget(null);
+	ren.clear();
+	ren.renderAsync(glassScene, cam);
+
+	document.getElementById("loader").style.display = "none";
+});
+
+window.addEventListener("resize", () => {
+	W = window.innerWidth; H = window.innerHeight;
+	ren.setSize(W, H);
+	cam.aspect = W / H;
+	cam.updateProjectionMatrix();
+	const pw = dpr * W, ph = dpr * H;
+	rt.setSize(pw, ph);
+	rt2.setSize(pw, ph);
+	rtBg.setSize(pw, ph);
+	uRes.value.set(pw, ph);
+});
+
+}
+main();
+</script>
+</body>
+</html>
