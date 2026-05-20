@@ -11,9 +11,8 @@ html, body {
   display:flex; align-items:center; justify-content:center;
   overflow:hidden; color:white;
 }
-canvas { display:block; cursor:grab; touch-action:none; }
+canvas { display:block; cursor:grab; touch-action:none;position:fixed; top:0; left:0; width:100%; height:100%; }
 canvas:active { cursor:grabbing; }
-#log { display:none; color:red; font:11px monospace; position:fixed; top:0; left:0; white-space:pre; pointer-events:none; z-index:999; max-width:90vw; max-height:50vh; overflow:auto; background:rgba(0,0,0,0.8); }
 #loader {
   position:fixed; top:0; left:0; width:100%; height:100%;
   display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px;
@@ -94,7 +93,7 @@ a {
 #vignette {
   pointer-events: none;
   background: transparent;
-  height: 100%;
+  height: 100vh;
   width: 100%;
   box-shadow: inset 0 0 50px rgba(0,0,0,0.63);
   position: fixed;

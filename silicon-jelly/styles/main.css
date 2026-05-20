@@ -296,3 +296,7 @@ footer a {
   position: absolute;
   z-index:110;
 }
+
+#pane-container {
+  display: none;
+}
