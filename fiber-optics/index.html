@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fiber Optics.</title>
+<script type="importmap">
+{"imports":{
+  "three":"https://cdn.jsdelivr.net/npm/three@0.174.0/build/three.webgpu.js",
+  "three/webgpu":"https://cdn.jsdelivr.net/npm/three@0.174.0/build/three.webgpu.js",
+  "three/tsl":"https://cdn.jsdelivr.net/npm/three@0.174.0/build/three.tsl.js"
+}}
+</script>
+<link rel="stylesheet" href="styles/style.css"/>
+</head>
+<body>
+<div id="pane-container"></div>
+<div id="vignette"></div>
+<div id="title-block">
+  <span id="title-eyebrow">Tinker Day #35</span>
+  <span id="title-headline">Fiber Optics.<sup style="font-size: small;">*elastic</sup></span>
+  <p style="font-size: 14px;">
+    Drag the left & right cable-endings<br>to move the cable.<br />
+  </p>
+</div>
+<footer><a id="nav-prev" href="https://dasprinzip.com/tinker/day34/">&larr; The Day Before.</a></footer>
+<div id="loader"><div class="spinner"></div><div class="loading-text">loading<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></div></div>
+<script type="module">
+import*as THREE from'three';
+import{Fn,uniform,vec2,vec3,vec4,float,uv,normalize,dot,max,min,abs,length,sqrt,pow,exp,mix,clamp,smoothstep,reflect,sign,sin,cos,If,Loop,Break,texture,floor}from'three/tsl';
+import{Pane}from'https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.min.js';
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  constants
+// ═══════════════════════════════════════════════════════════════════
+
+const LHT=.015,LR=.035,SD=.001,MD=10,AI=.4,AOB=.001,AOI=0.5,
+  AOR=.15,AOS=5,JIOR=1.45,JSC=.3,SI=.5,SP=32,GT=.03,GR=.02;
+const BW=128,BH=64,NP=17;
+
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  setup renderer
+// ═══════════════════════════════════════════════════════════════════
+
+const R=new THREE.WebGPURenderer({antialias:false});
+R.setSize(innerWidth,innerHeight);R.setPixelRatio(Math.min(devicePixelRatio,1.5));
+document.body.appendChild(R.domElement);await R.init();
+const SC=new THREE.Scene(),CM=new THREE.OrthographicCamera(-1,1,1,-1,0,1);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  setup tweakpane
+// ═══════════════════════════════════════════════════════════════════
+
+const PARAMS={camX:0.03,camY:1.10,camZ:2.31,light:0,color:{r:255,g:115,b:18},orbitRadius:0.5,cableThick:1.0};
+const pane=new Pane({container: document.getElementById('pane-container'), title:'Controls', expanded:/Mobi|Android|iPhone|iPad|iPod|Touch/i.test(navigator.userAgent) ? false : true});
+const camFolder=pane.addFolder({title:'Camera'});
+camFolder.addBinding(PARAMS,'camX',{min:-3,max:3,step:.01,label:'X'});
+camFolder.addBinding(PARAMS,'camY',{min:.5,max:5,step:.01,label:'Y'});
+camFolder.addBinding(PARAMS,'camZ',{min:-2,max:5,step:.01,label:'Z'});
+pane.addBinding(PARAMS,'light',{min:0,max:1,step:.01,label:'Light'});
+const colorBlade = pane.addBlade({
+  view: 'text',
+  label: 'Cable Color',
+  parse: v => v,
+  stringify: v => v,
+  value: '#ff7312',
+});
+pane.addBinding(PARAMS,'orbitRadius',{min:0.2,max:1.5,step:.01,label:'Box Orbit R'});
+pane.addBinding(PARAMS,'cableThick',{min:0.5,max:3.0,step:.01,label:'Cable Thick'});
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  uniform(s)
+// ═══════════════════════════════════════════════════════════════════
+
+const uRes=uniform(new THREE.Vector2(innerWidth,innerHeight));
+const uCam=uniform(new THREE.Vector3(.03,1.10,2.31));
+const uLi=uniform(new THREE.Vector3(.19,-.24,.75).normalize());
+const uJC=uniform(new THREE.Vector4(1,.45,.075,1));
+const uEC=uniform(new THREE.Vector4(0,-.03,.9,-.03));
+const uTime=uniform(0);
+const uOrbitR=uniform(0.5);
+const uCableThick=uniform(1.0);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  IQ´s sdBezier
+// ═══════════════════════════════════════════════════════════════════
+
+function sdBez(px,py,ax,ay,bx,by,cx,cy){
+  const eax=ax-px,eay=ay-py,abx=bx-ax,aby=by-ay;
+  const acx=cx-2*bx+ax,acy=cy-2*by+ay,cbx=abx*2,cby=aby*2;
+  const kk=1/(acx*acx+acy*acy+1e-20);
+  const kx=kk*(abx*acx+aby*acy);
+  const ky=kk*(2*(abx*abx+aby*aby)+eax*acx+eay*acy)/3;
+  const kz=kk*(eax*abx+eay*aby);
+  const p=ky-kx*kx,p3=p*p*p,q=kx*(2*kx*kx-3*ky)+kz;
+  let h=q*q+4*p3;
+  if(h>=0){h=Math.sqrt(h);const xx=(h-q)/2,yy=(-h-q)/2;
+    const t=Math.max(0,Math.min(1,Math.sign(xx)*Math.pow(Math.abs(xx),1/3)+Math.sign(yy)*Math.pow(Math.abs(yy),1/3)-kx));
+    const qx=eax+(cbx+acx*t)*t,qy=eay+(cby+acy*t)*t;return Math.sqrt(qx*qx+qy*qy)}
+  const z=Math.sqrt(-p),v=Math.acos(q/(p*z*2))/3,m=Math.cos(v),n=Math.sin(v)*1.732050808;
+  const t0=Math.max(0,Math.min(1,(m+m)*z-kx)),t1=Math.max(0,Math.min(1,(-n-m)*z-kx)),t2=Math.max(0,Math.min(1,(n-m)*z-kx));
+  const d0x=eax+(cbx+acx*t0)*t0,d0y=eay+(cby+acy*t0)*t0;
+  const d1x=eax+(cbx+acx*t1)*t1,d1y=eay+(cby+acy*t1)*t1;
+  const d2x=eax+(cbx+acx*t2)*t2,d2y=eay+(cby+acy*t2)*t2;
+  return Math.sqrt(Math.min(d0x*d0x+d0y*d0y,d1x*d1x+d1y*d1y,d2x*d2x+d2y*d2y));
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  slider physics
+// ═══════════════════════════════════════════════════════════════════
+
+const SX=-1,SY=0,YO=-.03,TL=1.9,RL=TL/(NP-1);
+const pX=new Float64Array(NP),pY=new Float64Array(NP),pvX=new Float64Array(NP),pvY=new Float64Array(NP);
+const nX=new Float64Array(NP),nY=new Float64Array(NP),cXa=new Float64Array(NP-1),cYa=new Float64Array(NP-1);
+const iM=new Float64Array(NP);
+function ss(a,b,x){const t=x<a?0:x>b?1:(x-a)/(b-a);return t*t*(3-2*t)}
+
+let LX=SX+TL*.20,RX=SX+TL-TL*.15;
+const MAX_IN=.30,GY=.06+LR;
+
+for(let i=0;i<NP;i++){const t=i/(NP-1),sp=RX-LX;pX[i]=pvX[i]=LX+t*sp;
+  pY[i]=pvY[i]=GY+Math.sin(Math.PI*t)*Math.max(0,1-sp/TL)*.15;
+  iM[i]=(i===0||i===NP-1)?0:1;nX[i]=0;nY[i]=1;
+  if(i<NP-1){cXa[i]=LX+(i+.5)/(NP-1)*sp;cYa[i]=GY}}
+
+const pad=.01,BBOX=[1.2,.9+TL*pad*10,-.3,SX-TL*pad];
+
+function setLX(x){LX=Math.max(SX,Math.min(SX+TL*MAX_IN,x))}
+function setRX(x){RX=Math.max(SX+TL-TL*MAX_IN,Math.min(SX+TL,x))}
+function pD(i,j,r,k){const dx=pX[j]-pX[i],dy=pY[j]-pY[i],l=Math.sqrt(dx*dx+dy*dy);if(l<1e-8)return;
+  const w=iM[i]+iM[j];if(!w)return;const f=(l-r)/l;
+  pX[i]+=dx*f*(iM[i]/w)*k;pY[i]+=dy*f*(iM[i]/w)*k;pX[j]-=dx*f*(iM[j]/w)*k;pY[j]-=dy*f*(iM[j]/w)*k}
+
+function stepPhysics(dt){if(dt<=0)return;const sub=6,h=dt/sub,damp=.01,sp=RX-LX,comp=Math.max(0,1-sp/TL);
+  for(let s=0;s<sub;s++){for(let i=0;i<NP;i++){const px=pX[i],py=pY[i];
+    if(!i){pX[i]=LX;pY[i]=GY;pvX[i]=LX;pvY[i]=GY;continue}
+    if(i===NP-1){pX[i]=RX;pY[i]=GY;pvX[i]=RX;pvY[i]=GY;continue}
+    const vx=(px-pvX[i])*(1-damp),vy=(py-pvY[i])*(1-damp);let ay=0;
+    if(comp>0){const t=i/(NP-1);ay=2*Math.sin(Math.PI*t)*ss(.01,.99,t)*ss(.01,.99,1-t)*comp}
+    pvX[i]=px;pvY[i]=py;pX[i]=px+vx;pY[i]=Math.max(GY,py+vy+ay*h*h)}
+    for(let it=0;it<16;it++){for(let i=0;i<NP-1;i++)pD(i,i+1,RL,.1);
+      for(let i=1;i<NP-1;i++){const t=i/(NP-1);pD(i-1,i+1,2*RL,.1*(.05+.95*Math.pow(Math.abs(t-.5)*2,1.2)))}
+      pY[1]+=(GY-pY[1])*.05;pY[NP-2]+=(GY-pY[NP-2])*.05;
+      pX[0]=LX;pY[0]=GY;pX[NP-1]=RX;pY[NP-1]=GY;
+      if(pY[1]>pY[2])pY[1]=pY[2];if(pX[1]<pX[0])pX[1]=pX[0]+.001;
+      if(pY[NP-2]>pY[NP-3])pY[NP-2]=pY[NP-3];if(pX[NP-2]>pX[NP-1])pX[NP-2]=pX[NP-1]-.001}}
+  for(let i=0;i<NP;i++){let dx,dy;if(!i){dx=pX[1]-pX[0];dy=pY[1]-pY[0]}
+    else if(i===NP-1){dx=pX[NP-1]-pX[NP-2];dy=pY[NP-1]-pY[NP-2]}
+    else{dx=pX[i+1]-pX[i-1];dy=pY[i+1]-pY[i-1]}
+    const l=Math.sqrt(dx*dx+dy*dy);if(l<1e-6){nX[i]=i>0?nX[i-1]:0;nY[i]=i>0?nY[i-1]:1;continue}
+    nX[i]=-dy/l;nY[i]=dx/l}
+  for(let i=0;i<NP-1;i++){const ax=pX[i],ay=pY[i],bx=pX[i+1],by=pY[i+1];
+    if(!i||i===NP-2){cXa[i]=(ax+bx)*.5;cYa[i]=(ay+by)*.5;continue}
+    const d=nX[i]*nX[i+1]+nY[i]*nY[i+1];if(d>.99){cXa[i]=(ax+bx)*.5;cYa[i]=(ay+by)*.5;continue}
+    const tx=nY[i],ty=-nX[i],ux=nY[i+1],uy=-nX[i+1],dn=tx*uy-ty*ux;
+    if(Math.abs(dn)<=1e-6){cXa[i]=(ax+bx)*.5;cYa[i]=(ay+by)*.5;continue}
+    const t=((bx-ax)*uy-(by-ay)*ux)/dn;cXa[i]=ax+t*tx;cYa[i]=ay+t*ty}}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  bezier texture
+// ═══════════════════════════════════════════════════════════════════
+
+const bd=new Float32Array(BW*BH*4);
+const bt=new THREE.DataTexture(bd,BW,BH,THREE.RGBAFormat,THREE.FloatType);
+bt.minFilter=THREE.LinearFilter;bt.magFilter=THREE.LinearFilter;
+bt.wrapS=THREE.ClampToEdgeWrapping;bt.wrapT=THREE.ClampToEdgeWrapping;
+function computeTex(){const[top,right,bottom,left]=BBOX,nS=NP-1,rX=right-left,rY=top-bottom;
+  for(let py=0;py<BH;py++){const sv=top-(py+.5)/BH*rY;for(let px=0;px<BW;px++){const su=left+(px+.5)/BW*rX;
+    let mD=1e10,bSeg=0,bT=0;const eps=.03;let xp=1e10,xm=1e10,yp=1e10,ym=1e10;
+    for(let i=0;i<nS;i++){const a0=pX[i],a1=pY[i],c0=cXa[i],c1=cYa[i],b0=pX[i+1],b1=pY[i+1];
+      const d=sdBez(su,sv,a0,a1,c0,c1,b0,b1);if(d<mD){mD=d;bSeg=i;
+        const ax=b0-a0,ay=b1-a1,px2=su-a0,py2=sv-a1,al=ax*ax+ay*ay;
+        bT=al>0?Math.max(0,Math.min(1,(px2*ax+py2*ay)/al)):0}
+      xp=Math.min(xp,sdBez(su+eps,sv,a0,a1,c0,c1,b0,b1));xm=Math.min(xm,sdBez(su-eps,sv,a0,a1,c0,c1,b0,b1));
+      yp=Math.min(yp,sdBez(su,sv+eps,a0,a1,c0,c1,b0,b1));ym=Math.min(ym,sdBez(su,sv-eps,a0,a1,c0,c1,b0,b1))}
+    const idx=(py*BW+px)*4;bd[idx]=mD;bd[idx+1]=(bSeg+bT)/nS;bd[idx+2]=(xp-xm)/(2*eps);bd[idx+3]=(yp-ym)/(2*eps)}}
+  bt.image.data=bd;bt.needsUpdate=true}
+computeTex();const uBT=texture(bt);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  TSL shader
+// ═══════════════════════════════════════════════════════════════════
+
+const mat=new THREE.MeshBasicNodeMaterial();
+mat.colorNode=Fn(()=>{
+  const f=uv(),asp=uRes.x.div(uRes.y),nx=f.x.mul(2).sub(1),ny=f.y.mul(2).sub(1);
+  const ro=uCam,fw=normalize(vec3(0,0,0).sub(ro)),rt=normalize(fw.cross(vec3(0,1,0))),up=rt.cross(fw);
+  const rd=normalize(fw.add(rt.mul(nx.mul(asp).mul(.4142))).add(up.mul(ny.mul(.4142))));
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  sdf function(s)
+  // ═══════════════════════════════════════════════════════════════════
+
+  const sdRB=Fn(([p,b,r])=>{const q=abs(p).sub(b).add(r);return min(max(q.x,q.y),float(0)).add(length(max(q,vec2(0)))).sub(r)});
+  const exY=Fn(([p,d,h])=>{const w=vec2(d,abs(p.y).sub(h));return min(max(w.x,w.y),float(0)).add(length(max(w,vec2(0))))});
+  const exZ=Fn(([p,d,h])=>{const w=vec2(d,abs(p.z).sub(h));return min(max(w.x,w.y),float(0)).add(length(max(w,vec2(0))))});
+  const cutD=Fn(([p])=>{const g=float(GR);return sdRB(p,vec2(float(1).add(g),float(.2).add(g)),float(.2).add(g))});
+  const sdBox3=Fn(([p,b,r])=>{const q=abs(p).sub(b);return min(max(max(q.x,q.y),q.z),float(0)).add(length(max(q,vec3(0)))).sub(r)});
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  hash
+  // ═══════════════════════════════════════════════════════════════════
+
+  const hash2=Fn(([p])=>{const x=dot(p,vec2(127.1,311.7)),y=dot(p,vec2(269.5,183.3));
+  const raw=sin(vec2(x,y)).mul(43758.5453);return raw.sub(floor(raw))});
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  track which box was hit (row, col) for stable per-box coloring
+  // ═══════════════════════════════════════════════════════════════════
+  
+  const closestBoxId=vec2(0,0).toVar();
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  boxes: orbit OUTSIDE the cable in XZ — 10x18 = 180 boxes
+  // ═══════════════════════════════════════════════════════════════════
+
+  const boxesSDF=Fn(([p])=>{const t=uTime,md=float(1e9).toVar();
+    Loop(10,({i:ri})=>{const rf=float(ri);
+      Loop(18,({i:ci})=>{const cf=float(ci);
+        const rh=hash2(vec2(rf.add(7),cf.add(13)));
+        const rh2=hash2(vec2(rf.add(31),cf.add(57)));
+        // Orbit centers centered on cable midpoint (-0.05), tight spread
+        const cx=float(-0.45).add(rf.mul(.09));  // -0.45 to +0.36
+
+
+
+        // ═══════════════════════════════════════════════════════════════════
+        //  orbit radius: tight around cable
+        // ═══════════════════════════════════════════════════════════════════        
+
+        const oR=uOrbitR.mul(float(.5).add(rh.y.mul(.35))).add(rh2.x.mul(.05));
+        const oSpd=float(.3).add(rh2.y.mul(.5));
+        const oPh=cf.mul(6.2832/18).add(rh.x.mul(6.28));
+        const oAng=t.mul(oSpd).add(oPh);
+        const ox=cx.add(cos(oAng).mul(oR));
+        const oz=sin(oAng).mul(oR);
+        const fH=float(.08).add(rh2.x.mul(.18)).add(rh2.y.mul(.08));
+        const bob=sin(t.mul(float(1.2).add(rh.x.mul(1.5))).add(rh.y.mul(6.28))).mul(.012);
+        const oy=float(.06).add(fH).add(bob);
+        const bpos=vec3(ox,oy,oz);
+        const bh=float(.012).add(rh.x.mul(.02));
+        const bw=float(.012).add(rh.y.mul(.016));
+        const bd2=float(.012).add(rh.x.mul(.008));
+        const rSpd=float(.6).add(rh2.x.mul(2.5));
+        const ang=t.mul(rSpd).add(rh2.y.mul(6.28));
+        const ca=cos(ang),sa=sin(ang);
+        const lp=p.sub(bpos);
+        const r1=vec3(lp.x.mul(ca).sub(lp.z.mul(sa)),lp.y,lp.x.mul(sa).add(lp.z.mul(ca)));
+        const ang2=t.mul(rSpd.mul(.37)).add(rh.x.mul(6.28));
+        const ca2=cos(ang2),sa2=sin(ang2);
+        const r2=vec3(r1.x,r1.y.mul(ca2).sub(r1.z.mul(sa2)),r1.y.mul(sa2).add(r1.z.mul(ca2)));
+        const d=sdBox3(r2,vec3(bw,bh,bd2),float(.005));
+
+
+
+        // ═══════════════════════════════════════════════════════════════════
+        //  track which box is closest — store its identity
+        // ═══════════════════════════════════════════════════════════════════      
+
+        If(d.lessThan(md),()=>{
+          md.assign(d);
+          closestBoxId.assign(vec2(rf,cf));
+        });
+      });
+    });
+    return md
+  });
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ground + boxes
+  // ═══════════════════════════════════════════════════════════════════
+
+  const gndOnly=Fn(([p])=>min(p.y.sub(.06),exY(p,cutD(p.xz).negate(),float(GT).sub(float(GR))).sub(float(GR))));
+  const gSDF=Fn(([p])=>min(gndOnly(p),boxesSDF(p)));
+  const gN=Fn(([p])=>{const e=float(.0005);return normalize(vec3(gSDF(p.add(vec3(e,0,0))).sub(gSDF(p.sub(vec3(e,0,0)))),gSDF(p.add(vec3(0,e,0))).sub(gSDF(p.sub(vec3(0,e,0)))),gSDF(p.add(vec3(0,0,e))).sub(gSDF(p.sub(vec3(0,0,e))))))});
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  bezier sampling
+  // ═══════════════════════════════════════════════════════════════════
+
+  const bL=float(BBOX[3]),bR=float(BBOX[1]),bB=float(BBOX[2]),bTp=float(BBOX[0]);
+  const sBez=Fn(([p])=>{const bx=p.x.sub(bL).div(bR.sub(bL)),by=bTp.sub(p.y).div(bTp.sub(bB));
+    const inB=bx.greaterThanEqual(float(0)).and(bx.lessThanEqual(float(1))).and(by.greaterThanEqual(float(0))).and(by.lessThanEqual(float(1)));
+    const s=uBT.sample(clamp(vec2(bx,by),0,1)),r=vec4(float(1e9),0,0,0).toVar();If(inB,()=>{r.assign(s)});return r});
+  
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  cable thickness controlled by uniform multiplier
+  // ═══════════════════════════════════════════════════════════════════
+
+  const sSDF=Fn(([p])=>{const b=sBez(p.xy);return vec2(exZ(p,b.x,float(LHT).mul(uCableThick)).sub(float(LR).mul(uCableThick)),b.y)});
+  const scSDF=Fn(([p])=>{const g=gSDF(p),s=sSDF(p),d=min(g,s.x).toVar(),o=float(0).toVar(),t=float(0).toVar();
+    If(s.x.lessThan(g),()=>{d.assign(s.x);o.assign(1);t.assign(s.y)});return vec4(d,o,t,0)});
+  const scN=Fn(([p])=>{const e=float(.0005);return normalize(vec3(scSDF(p.add(vec3(e,0,0))).x.sub(scSDF(p.sub(vec3(e,0,0))).x),scSDF(p.add(vec3(0,e,0))).x.sub(scSDF(p.sub(vec3(0,e,0))).x),scSDF(p.add(vec3(0,0,e))).x.sub(scSDF(p.sub(vec3(0,0,e))).x)))});
+  const slN=Fn(([p,pr])=>{const b=sBez(p.xy),g=b.zw;
+    const zD=max(float(0),abs(p.z).sub(float(LHT*.85)).mul(float(LHT)).div(float(LHT).sub(float(LHT*.85))));
+    const eD=float(LR).sub(b.x);const bl=smoothstep(float(.9*LR+.1*LHT),float(0),zD.mul(.1).add(eD.mul(.9)));
+    return normalize(mix(vec3(0,0,sign(p.z)),vec3(g.x,g.y,0),bl.mul(.5).add(.5)))});
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ambient occlusion
+  // ═══════════════════════════════════════════════════════════════════
+
+  const cAO=Fn(([p,n])=>{const o=float(0).toVar(),w=float(1).toVar(),s=float(AOR/AOS);
+    Loop(AOS,({i})=>{const h=s.mul(float(i).add(1));o.addAssign(max(float(0),h.sub(scSDF(p.add(n.mul(h))).x.sub(float(AOB)))).mul(w));w.mulAssign(.5)});
+    return clamp(float(1).sub(float(AOI).mul(o).div(float(AOR))),0,1)});
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  lighting
+  // ═══════════════════════════════════════════════════════════════════
+
+  const cLit=Fn(([p,n,v])=>{const ld=uLi.negate().normalize(),d=max(dot(n,ld),float(0)),vd=normalize(v.sub(p));
+    const sp=pow(max(dot(vd,reflect(ld.negate(),n)),float(0)),float(SP)).mul(SI);
+    return clamp(vec3(.9).mul(d).add(vec3(.9).mul(vec3(.6,.65,.8)).mul(AI)).add(vec3(1).mul(sp)),0,1)});
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  environment color for reflection(s)
+  // ═══════════════════════════════════════════════════════════════════
+
+  const envColor=Fn(([dir])=>{
+    const skyT=clamp(dir.y.mul(.5).add(.5),0,1);
+    const sky=mix(vec3(.78,.78,.82),vec3(.88,.9,.95),skyT);
+    const gndT=clamp(dir.y.negate().mul(2),0,1);
+    return mix(sky,vec3(.7,.7,.72),gndT)});
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  fake shadow
+  // ═══════════════════════════════════════════════════════════════════
+
+  const fShd=Fn(([p,ld])=>{const jc=uJC.xyz,ex=uEC.z;
+    const fu=p.x.sub(p.z.mul(ld.x).mul(sign(ld.z))).mul(.5).add(.5);
+    const fv=float(1).sub(p.z.negate().div(ld.z).mul(.5)).sub(.2);
+    const s=uBT.sample(clamp(vec2(fu,fv),0,1));
+    const js=mix(float(0),s.y,clamp(p.x.mul(1.5).add(1.1),0,1)),sc=mix(vec3(0),jc,js);
+    const cn=float(20).mul(clamp(fv,0,1)).mul(float(.8).add(ex.mul(.2)));
+    const fe=clamp(fu.mul(10),0,1).mul(clamp(float(1).sub(fu).mul(10),0,1)).mul(clamp(float(1).sub(fv).mul(10),0,1)).mul(clamp(fv,0,1));
+    return mix(vec3(1),mix(sc,vec3(1),clamp(s.x.mul(cn).sub(.3),0,1)),clamp(float(1).sub(ld.y).mul(2),0,1).mul(fe))});
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  glass box rendering — stable per-box colors from identity
+  // ═══════════════════════════════════════════════════════════════════
+
+  const renderGlass=Fn(([hp,n,vd,rayD,rayO])=>{
+    const myBoxId=closestBoxId.toVar();
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  Color from box IDENTITY (row,col index)
+    //  not position — stays constant as box moves
+    // ═══════════════════════════════════════════════════════════════════    
+
+    const bh=hash2(vec2(myBoxId.x.add(7),myBoxId.y.add(13)));
+    const bh2=hash2(vec2(myBoxId.x.add(31),myBoxId.y.add(57)));
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  Warm tint with visible variation — each box distinctly different
+    // ═══════════════════════════════════════════════════════════════════  
+
+    const tint=vec3(
+      float(.80).add(bh.x.mul(.20)),  // R: 0.80-1.00
+      float(.65).add(bh.y.mul(.25)),  // G: 0.65-0.90
+      float(.50).add(bh2.x.mul(.30))  // B: 0.50-0.80
+    );
+    const glIOR=float(1.5),ci2=max(dot(vd,n),float(0));
+    const gr0=float(1).sub(glIOR).div(float(1).add(glIOR)),gR0=gr0.mul(gr0);
+    const gF=gR0.add(float(1).sub(gR0).mul(pow(float(1).sub(ci2),5)));
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  reflection(s): march against FULL scene (ground + boxes + CABLE)
+    // ═══════════════════════════════════════════════════════════════════     
+
+    const rfl=reflect(rayD,n);
+    const glRefl=envColor(rfl).toVar();
+    const rOrig=hp.add(rfl.mul(.01));
+    const rt=float(0).toVar();
+    Loop(16,()=>{
+      const rp=rOrig.add(rfl.mul(rt));
+      const scHit=scSDF(rp); // full scene: ground + boxes + cable
+      rt.addAssign(scHit.x);
+      If(scHit.x.lessThan(float(.002)),()=>{
+        const rn=scN(rp);
+        const rlit=cLit(rp,rn,hp);
+        If(scHit.y.greaterThan(float(.5)),()=>{
+          // ═══════════════════════════════════════════════════════════════════
+          //  Hit the cable — show jelly color in reflection
+          // ═══════════════════════════════════════════════════════════════════           
+          const jc=uJC.xyz;
+          glRefl.assign(mix(jc,vec3(1),float(.3)).mul(rlit).mul(1.3));
+        }).Else(()=>{
+          const rbD=boxesSDF(rp); // this sets closestBoxId as side effect
+          If(rbD.lessThan(float(.005)),()=>{
+            // ═══════════════════════════════════════════════════════════════════
+            //  reflected box — use stable identity color
+            // ═══════════════════════════════════════════════════════════════════              
+            const rbh=hash2(vec2(closestBoxId.x.add(7),closestBoxId.y.add(13)));
+            const rbh2=hash2(vec2(closestBoxId.x.add(31),closestBoxId.y.add(57)));
+            const rbc=vec3(float(.80).add(rbh.x.mul(.20)),float(.65).add(rbh.y.mul(.25)),float(.50).add(rbh2.x.mul(.30)));
+            glRefl.assign(rbc.mul(rlit).mul(1.2));
+          }).Else(()=>{
+            glRefl.assign(vec3(.85,.85,.88).mul(rlit));
+          });
+        });
+        Break();
+      });
+      If(rt.greaterThan(float(3)),()=>{Break()});
+    });
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  refractiom: through box to ground behind
+    // ═══════════════════════════════════════════════════════════════════     
+
+    const eta2=float(1).div(glIOR),k2=float(1).sub(eta2.mul(eta2).mul(float(1).sub(ci2.mul(ci2))));
+    const glRefr=vec3(.85,.85,.88).toVar();
+    If(k2.greaterThan(float(0)),()=>{
+      const rD2=normalize(rayD.mul(eta2).add(n.mul(eta2.mul(ci2).sub(sqrt(k2)))));
+      const eP=hp.add(rD2.mul(.06));const gt=float(0).toVar();
+      Loop(8,()=>{const gd=eP.add(rD2.mul(gt)).y.sub(.06);gt.addAssign(max(gd,float(.001)));
+        If(gd.lessThan(float(.001)).or(gt.greaterThan(float(2))),()=>{Break()})});
+      If(gt.lessThan(float(2)),()=>{const gH=eP.add(rD2.mul(gt));glRefr.assign(vec3(.85,.85,.88).mul(cLit(gH,vec3(0,1,0),rayO)))})});
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  combine with fresnel, apply tint
+    // ═══════════════════════════════════════════════════════════════════      
+
+    const glassMix=glRefl.mul(gF).add(glRefr.mul(float(1).sub(gF))).mul(tint);
+    const ld=uLi.negate().normalize();
+    const glSpec=pow(max(dot(vd,reflect(ld.negate(),n)),float(0)),float(80)).mul(1.2);
+    return glassMix.add(vec3(glSpec))});
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  render background
+  // ═══════════════════════════════════════════════════════════════════  
+
+  const rBg=Fn(([o,d,t])=>{const hp=o.add(d.mul(t)),n=scN(hp),ld=uLi.negate().normalize(),sh=fShd(hp,uLi);
+    const df=max(dot(n,ld),float(0)),vd=normalize(o.sub(hp));
+    const sp=pow(max(dot(vd,reflect(ld.negate(),n)),float(0)),float(SP)).mul(SI);
+    const lit=clamp(vec3(.9).mul(df).mul(sh).add(vec3(.9).mul(vec3(.6,.65,.8)).mul(AI)).add(vec3(1).mul(sp).mul(sh)),0,1);
+    const ao=cAO(hp,n);const fc=vec3(.85,.85,.88).mul(lit).mul(ao).toVar();
+    If(boxesSDF(hp).lessThan(float(.005)),()=>{fc.assign(renderGlass(hp,n,vd,d,o))});
+    const bg=fc,jc=uJC.xyz,ex=uEC.z,dp=hp.sub(vec3(ex,0,0)),sq=dot(dp,dp);
+    return vec4(bg.add(jc.mul(float(1).div(sq.mul(15).add(1)).mul(.2))).add(jc.mul(float(1).div(sq.mul(40).add(1)).mul(.15)).mul(abs(n.z))),1)});
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  marchNoJelly
+  // ═══════════════════════════════════════════════════════════════════  
+
+  const mNJ=Fn(([o,d])=>{const t=float(0).toVar();
+    Loop(12,()=>{const h=gSDF(o.add(d.mul(t)));t.addAssign(h);If(h.lessThan(float(SD*10)).or(t.greaterThan(float(MD))),()=>{Break()})});
+    const r=vec3(0).toVar();If(t.lessThan(float(MD)),()=>{const hp=o.add(d.mul(t)),n=gN(hp),lit=cLit(hp,n,o);
+      const c=vec3(.85,.85,.88).mul(lit).toVar();
+      If(boxesSDF(hp).lessThan(float(.005)),()=>{c.assign(renderGlass(hp,n,normalize(o.sub(hp)),d,o))});
+      r.assign(c)});return r});
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  main march
+  // ═══════════════════════════════════════════════════════════════════  
+
+  const col=vec3(0).toVar(),bgD=float(0).toVar();
+  Loop(48,()=>{const h=gSDF(ro.add(rd.mul(bgD)));bgD.addAssign(h);If(h.lessThan(float(SD)),()=>{Break()})});
+  const bg=rBg(ro,rd,bgD);
+  const iv=vec3(1).div(rd),t0=vec3(BBOX[3],BBOX[2],-.25).sub(ro).mul(iv),t1=vec3(BBOX[1],BBOX[0],.25).sub(ro).mul(iv);
+  const tn=min(t0,t1),tx=max(t0,t1),tN=max(max(tn.x,tn.y),tn.z),tF=min(min(tx.x,tx.y),tx.z);
+  col.assign(bg.xyz);
+  If(tF.greaterThanEqual(max(tN,float(0))),()=>{const dist=max(float(0),tN).toVar();
+    Loop(48,()=>{const info=scSDF(ro.add(rd.mul(dist)));dist.addAssign(info.x);
+      If(info.x.lessThan(float(SD)),()=>{const hp=ro.add(rd.mul(dist));
+        If(info.y.greaterThan(float(.5)),()=>{const N=slN(hp,info.z),I=rd,ci=clamp(dot(I.negate(),N),0,1);
+          const r0=float(1-JIOR).div(float(1+JIOR)),R0=r0.mul(r0);
+          const F=R0.add(float(1).sub(R0).mul(pow(float(1).sub(ci),5)));
+          const refl=clamp(vec3(hp.y.add(.2)),0,1);
+          const eta=float(1/JIOR),k=float(1).sub(eta.mul(eta).mul(float(1).sub(ci.mul(ci))));
+          const refr=vec3(0).toVar();
+          If(k.greaterThan(float(0)),()=>{const rD=normalize(I.mul(eta).add(N.mul(eta.mul(ci).sub(sqrt(k)))));
+            const env=mNJ(hp.add(rD.mul(SD*4)),rD),p=info.z,jc=uJC.xyz;
+            const T=exp(vec3(1).sub(jc).mul(20).negate().mul(pow(p,2)).mul(.08));
+            const ld=uLi.negate().normalize();
+            refr.assign(env.mul(T).add(jc.mul(1.5).mul(float(JSC).mul(max(float(0),dot(ld,rD))).mul(pow(p,3)))))});
+          col.assign(refl.mul(F).add(refr.mul(float(1).sub(F))))});Break()});
+      If(dist.greaterThan(bgD),()=>{Break()})})});
+  const tc=col.mul(1.3),e2=exp(tc.mul(2));return vec4(e2.sub(1).div(e2.add(1)),1)})();
+
+SC.add(new THREE.Mesh(new THREE.PlaneGeometry(2,2),mat));
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  user interaction(s)
+// ═══════════════════════════════════════════════════════════════════  
+
+let dragSide=null,mx=0;
+function s2w(sx){return(sx/innerWidth)*3.5-1.75}
+R.domElement.addEventListener('pointerdown',e=>{const wx=s2w(e.clientX);dragSide=Math.abs(wx-LX)<Math.abs(wx-RX)?'left':'right';mx=wx});
+addEventListener('pointermove',e=>{if(dragSide)mx=s2w(e.clientX)});
+addEventListener('pointerup',()=>dragSide=null);
+addEventListener('resize',()=>{R.setSize(innerWidth,innerHeight);uRes.value.set(innerWidth,innerHeight)});
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  render-loop
+// ═══════════════════════════════════════════════════════════════════  
+
+let lt=performance.now(),fc=0,ft=0;
+const loaderEl=document.getElementById('loader');
+function render(){requestAnimationFrame(render);const now=performance.now(),dt=Math.min((now-lt)*.001,.1);lt=now;
+  fc++;ft+=dt;if(ft>1){fc=0;ft=0}
+  if(fc===2&&loaderEl){loaderEl.classList.add('hide');setTimeout(()=>loaderEl.remove(),700)}
+  uTime.value+=dt;
+  // Tweakpane sync
+  uCam.value.set(PARAMS.camX,PARAMS.camY,PARAMS.camZ);
+  const a=new THREE.Vector3(.18,-.3,.64).normalize(),b=new THREE.Vector3(-.5,-.14,-.8).normalize();
+  uLi.value.copy(new THREE.Vector3().lerpVectors(a,b,PARAMS.light).normalize());
+  uJC.value.set(PARAMS.color.r/255,PARAMS.color.g/255,PARAMS.color.b/255,1);
+  uOrbitR.value=PARAMS.orbitRadius;
+  uCableThick.value=PARAMS.cableThick;
+
+  const textInput = colorBlade.element.querySelector('input[type="text"]');
+  if (textInput) {
+    const colorInput = document.createElement('input');
+    colorInput.type = 'color';
+    colorInput.value = '#ff7312';
+    colorInput.style.cssText = 'width:100%;height:24px;border:none;background:none;cursor:pointer;padding:0;';
+    colorInput.addEventListener('input', e => {
+      const hex = e.target.value;
+      PARAMS.color.r = parseInt(hex.slice(1,3),16);
+      PARAMS.color.g = parseInt(hex.slice(3,5),16);
+      PARAMS.color.b = parseInt(hex.slice(5,7),16);
+    });
+    textInput.replaceWith(colorInput);
+  }
+
+  if(dragSide==='left')setLX(mx);else if(dragSide==='right')setRX(mx);
+  stepPhysics(dt);uEC.value.set(pX[NP-2],pY[NP-2],pX[NP-1],pY[NP-1]);
+  computeTex();R.render(SC,CM)}
+render();
+</script>
+</body>
+</html>
