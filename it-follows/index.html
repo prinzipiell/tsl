@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>It follows.</title>
+<link rel="stylesheet" href="styles/style.css"/>
+</head>
+<body>
+<div id="pane-container"></div>
+<div id="vignette"></div>
+<div id="title-block">
+  <span id="title-eyebrow">Tinker Day #36</span>
+  <span id="title-headline">It follows.</span>
+  <p style="font-size: 14px;">
+    Move mouse to interact.<br />
+  </p>
+</div>
+<footer><a id="nav-prev" href="https://dasprinzip.com/tinker/day35/">&larr; The Day Before.</a></footer>
+<div id="loader"><div class="spinner"></div><div class="loading-text">loading<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></div></div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.175.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.175.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.175.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.175.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import * as TSL from 'three/tsl';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+import { Pane } from 'https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.min.js';
+
+const { MeshBasicNodeMaterial } = THREE;
+const { mix, vec3, vec4, normalLocal, float, uniform, texture: tslTexture,
+        positionWorld, normalize, smoothstep, pow, dot, max } = TSL;
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  color-palette
+// ═══════════════════════════════════════════════════════════════════
+
+var P = ['#FFFFFF','#FE2F04','#0D5B93','#0E4366','#C74619','#F5B067','#F5C893'];
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  optional skybox background
+// ═══════════════════════════════════════════════════════════════════
+
+var SKYBOX_IMAGES = [
+   './skybox/px.png',
+   './skybox/nx.png',
+   './skybox/py.png',
+   './skybox/ny.png',
+   './skybox/pz.png',
+   './skybox/nz.png',
+];
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  setup renderer
+// ═══════════════════════════════════════════════════════════════════
+
+var renderer = new THREE.WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+await renderer.init(); // required for WebGPU
+document.body.appendChild(renderer.domElement);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  tube(s) env-map 
+// ═══════════════════════════════════════════════════════════════════
+
+var pmrem  = new THREE.PMREMGenerator(renderer);
+var envMap = pmrem.fromScene(new RoomEnvironment()).texture;
+pmrem.dispose();
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  scene
+// ═══════════════════════════════════════════════════════════════════
+
+var scene = new THREE.Scene();
+scene.environment = envMap;
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  sky sphere: TSL NodeMaterial
+// ═══════════════════════════════════════════════════════════════════
+
+var skyHasTexUniform = uniform( 0 );
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  1×1 black CanvasTexture as placeholder — valid texture 
+//  TSL can compile with
+// ═══════════════════════════════════════════════════════════════════
+
+var _pc = document.createElement('canvas');
+_pc.width = _pc.height = 1;
+_pc.getContext('2d').fillRect(0,0,1,1);
+var skyPlaceholder = new THREE.CanvasTexture(_pc);
+skyPlaceholder.needsUpdate = true;
+
+var skyTexNode      = tslTexture( skyPlaceholder );
+var skyHasTexUniform = uniform( 0 );
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  tweakable gradient color uniforms — exposed in Tweakpane
+// ═══════════════════════════════════════════════════════════════════
+
+var uBgTop    = uniform( new THREE.Color( 0.95, 0.72, 0.15 ) ); 
+var uBgMid1   = uniform( new THREE.Color( 1.00, 0.25, 0.55 ) ); 
+var uBgMid2   = uniform( new THREE.Color( 0.55, 0.08, 0.55 ) ); 
+var uBgBottom = uniform( new THREE.Color( 0.08, 0.05, 0.28 ) );
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  direction-based gradient
+// ═══════════════════════════════════════════════════════════════════
+
+var dir = normalize( positionWorld );
+var t   = dir.y.mul( 0.5 ).add( 0.5 ); // 0=bottom, 1=top
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  4-stop gradient
+// ═══════════════════════════════════════════════════════════════════
+
+var c01  = mix( vec3( uBgBottom.x, uBgBottom.y, uBgBottom.z ),
+                vec3( uBgMid2.x,   uBgMid2.y,   uBgMid2.z   ),
+                smoothstep( float(0.0), float(0.33), t ) );
+var c12  = mix( c01,
+                vec3( uBgMid1.x,   uBgMid1.y,   uBgMid1.z   ),
+                smoothstep( float(0.33), float(0.66), t ) );
+var grad = mix( c12,
+                vec3( uBgTop.x,    uBgTop.y,    uBgTop.z    ),
+                smoothstep( float(0.66), float(1.0), t ) );
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  subtle highlight spots for IBL reflections on tubes
+// ═══════════════════════════════════════════════════════════════════
+
+var sun1 = pow( max( dot( dir, normalize( vec3(  0.5,  0.8, -0.3 ) ) ), float(0) ), float(20) );
+var sun2 = pow( max( dot( dir, normalize( vec3( -0.6,  0.2,  0.7 ) ) ), float(0) ), float(10) );
+grad = grad
+  .add( vec3( float(0.12), float(0.08), float(0.04) ).mul( sun1 ) )
+  .add( vec3( float(0.05), float(0.04), float(0.08) ).mul( sun2 ) );
+
+var gradient = vec4( grad, float(1) );
+var skyColor = mix( gradient, skyTexNode, float( skyHasTexUniform ) );
+
+var skyMat = new MeshBasicNodeMaterial();
+skyMat.colorNode  = skyColor;
+skyMat.side       = THREE.BackSide;
+skyMat.depthWrite = false;
+
+var skybox = new THREE.Mesh( new THREE.SphereGeometry( 400, 64, 32 ), skyMat );
+scene.add( skybox );
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  hdri loader
+// ═══════════════════════════════════════════════════════════════════
+
+var hdriInput = document.createElement('input');
+hdriInput.type = 'file';
+hdriInput.accept = '.hdr,.exr';
+hdriInput.style.display = 'none';
+document.body.appendChild(hdriInput);
+
+var pmrem2 = new THREE.PMREMGenerator(renderer);
+
+function applyEnvMap(tex) {
+  scene.environment = tex;
+  tubes.forEach(function(t) {
+    t.mat.envMap = tex;
+    t.mat.envMapIntensity = PARAMS.envMapIntensity;
+    t.mat.needsUpdate = true;
+  });
+}
+
+hdriInput.addEventListener('change', function() {
+  var file = hdriInput.files[0];
+  if (!file) return;
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    var loader = new RGBELoader();
+    var buffer = e.target.result;
+    var tex = loader.parse(buffer);
+    if (tex) {
+      var hdrEnv = pmrem2.fromEquirectangular(tex).texture;
+      tex.dispose();
+      applyEnvMap(hdrEnv);
+    }
+  };
+  reader.readAsArrayBuffer(file);
+});
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  cubemap loader
+// ═══════════════════════════════════════════════════════════════════
+
+var cubeInput = document.createElement('input');
+cubeInput.type = 'file';
+cubeInput.accept = 'image/*';
+cubeInput.multiple = true;
+cubeInput.style.display = 'none';
+document.body.appendChild(cubeInput);
+
+var cubeStatus = { label: 'No cubemap loaded' };
+
+cubeInput.addEventListener('change', function() {
+  var files = Array.from(cubeInput.files);
+  if (files.length < 1) return;
+
+  cubeStatus.label = 'Loading ' + files.length + ' image(s)…';
+  pane.refresh();
+
+  files.sort(function(a, b) { return a.name.localeCompare(b.name, undefined, { numeric: true }); });
+
+  var loaded = 0;
+  var images = new Array(files.length);
+
+  files.forEach(function(file, idx) {
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      var img = new Image();
+      img.onload = function() {
+        images[idx] = img;
+        loaded++;
+        cubeStatus.label = 'Loaded ' + loaded + ' / ' + files.length;
+        pane.refresh();
+        if (loaded === files.length) buildCubeTexture(images, files.length);
+      };
+      img.onerror = function() {
+        cubeStatus.label = '⚠ Failed: ' + file.name;
+        pane.refresh();
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+});
+
+function buildCubeTexture(images, count) {
+  if (count >= 1) {
+    var src    = images[0];
+    var canvas = document.createElement('canvas');
+    canvas.width  = src.width;
+    canvas.height = src.height;
+    canvas.getContext('2d').drawImage(src, 0, 0);
+    var tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.needsUpdate = true;
+    skyTexNode.value       = tex;
+    skyTexNode.needsUpdate = true;
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  50/50 chance to display skybox or gradient at start
+    // ═══════════════════════════════════════════════════════════════════    
+
+    var roll = Math.random();
+    if (roll > 0.5) {
+      PARAMS.useSkybox = true;
+      skyHasTexUniform.value = 1;
+    } else {
+      PARAMS.useSkybox = false;
+      skyHasTexUniform.value = 0;
+    }
+    pane.refresh();
+    cubeStatus.label = '✓ Applied (' + count + ' image' + (count > 1 ? 's' : '') + ')';
+  } else {
+    cubeStatus.label = '⚠ Select at least 1 image';
+  }
+  pane.refresh();
+}
+
+var camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 500);
+camera.position.set(0, 0, 36);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  auto-load skybox if SKYBOX_IMAGES is populated
+// ═══════════════════════════════════════════════════════════════════
+
+if (SKYBOX_IMAGES.length === 6) {
+  var autoLoaded = 0;
+  var autoImages = new Array(6);
+  SKYBOX_IMAGES.forEach(function(src, idx) {
+    var img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = function() {
+      autoImages[idx] = img;
+      autoLoaded++;
+      if (autoLoaded === 6) {
+        buildCubeTexture(autoImages, 6);
+        cubeStatus.label = '✓ Auto-loaded skybox';
+      }
+    };
+    img.onerror = function() { console.warn('Skybox image failed to load:', src); };
+    img.src = src;
+  });
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  lighting
+// ═══════════════════════════════════════════════════════════════════    
+scene.add(camera);
+
+var dir1 = new THREE.DirectionalLight(0xffffff, 1.2);
+dir1.position.set(-3, 4, 3);
+camera.add(dir1);
+
+var dir2 = new THREE.DirectionalLight(0xffffff, 4.08);
+dir2.position.set(20, -11.3, 13.0);
+camera.add(dir2);
+
+var dir3 = new THREE.DirectionalLight(0xffffff, 5.0);
+dir3.position.set(4.8, 7.4, -16.5);
+camera.add(dir3);
+
+var ambientLight = new THREE.AmbientLight(0x404040, 5.0);
+scene.add(ambientLight);
+
+scene.add(new THREE.HemisphereLight(P[0], P[1], 2.0));
+
+var PARAMS = {
+  history: 80, tubeRadius: 0.28, envMapIntensity: 0.07,
+  bgScale: 30, bgRotation: 0.273,
+  useSkybox: false,
+  bgTop:    { r: 0.95, g: 0.72, b: 0.15 },
+  bgMid1:   { r: 1.00, g: 0.25, b: 0.55 },
+  bgMid2:   { r: 0.55, g: 0.08, b: 0.55 },
+  bgBottom: { r: 0.08, g: 0.05, b: 0.28 },
+};
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  config
+// ═══════════════════════════════════════════════════════════════════  
+
+var LERP_SPEEDS = [0.22, 0.12, 0.065, 0.034, 0.016, 0.007];
+var NUM_TUBES   = LERP_SPEEDS.length;
+var TUBE_SEGS   = 60;
+var TUBE_RSEG   = 10;
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  tapered tube-geometry
+// ═══════════════════════════════════════════════════════════════════ 
+
+function buildTaperedTubeGeo(curve, tubularSegs, maxRadius, radialSegs) {
+  var positions = [], normals = [], uvs = [], indices = [];
+  var frames = curve.computeFrenetFrames(tubularSegs, false);
+  var pts    = curve.getPoints(tubularSegs);
+
+  for (var i = 0; i <= tubularSegs; i++) {
+    var t      = i / tubularSegs;
+    var taper  = Math.pow(Math.sin(t * Math.PI), 0.5);
+    var radius = maxRadius * taper;
+    var normal   = frames.normals[i];
+    var binormal = frames.binormals[i];
+    var pt       = pts[i];
+    for (var j = 0; j <= radialSegs; j++) {
+      var angle = (j / radialSegs) * Math.PI * 2;
+      var nx = Math.cos(angle) * normal.x + Math.sin(angle) * binormal.x;
+      var ny = Math.cos(angle) * normal.y + Math.sin(angle) * binormal.y;
+      var nz = Math.cos(angle) * normal.z + Math.sin(angle) * binormal.z;
+      positions.push(pt.x + radius * nx, pt.y + radius * ny, pt.z + radius * nz);
+      normals.push(nx, ny, nz);
+      uvs.push(j / radialSegs, t);
+    }
+  }
+  for (var i = 0; i < tubularSegs; i++) {
+    for (var j = 0; j < radialSegs; j++) {
+      var a = (radialSegs + 1) * i + j;
+      var b = (radialSegs + 1) * (i + 1) + j;
+      var c = (radialSegs + 1) * (i + 1) + j + 1;
+      var d = (radialSegs + 1) * i + j + 1;
+      indices.push(a, b, d); indices.push(b, c, d);
+    }
+  }
+  var geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('normal',   new THREE.Float32BufferAttribute(normals,   3));
+  geo.setAttribute('uv',       new THREE.Float32BufferAttribute(uvs,       2));
+  geo.setIndex(indices);
+  return geo;
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  pointer / touch
+// ═══════════════════════════════════════════════════════════════════ 
+
+var ndc     = new THREE.Vector2(0, 0);
+var targetZ = 0, currentZ = 0;
+var Z_RANGE = 12;
+var _raycaster = new THREE.Raycaster();
+var _plane     = new THREE.Plane();
+var _planeHit  = new THREE.Vector3();
+
+function ndcToWorld(nx, ny) {
+  var camDir = new THREE.Vector3();
+  camera.getWorldDirection(camDir);
+  var planePos = camera.position.clone().addScaledVector(camDir, 20);
+  _plane.setFromNormalAndCoplanarPoint(camDir, planePos);
+  _raycaster.setFromCamera({ x: nx, y: ny }, camera);
+  _raycaster.ray.intersectPlane(_plane, _planeHit);
+  return _planeHit.clone();
+}
+
+function onMove(cx, cy) {
+  ndc.x      =  (cx / innerWidth)  * 2 - 1;
+  ndc.y      = -(cy / innerHeight) * 2 + 1;
+  targetZ    = -ndc.y * Z_RANGE;
+  isAsleep   = false;
+  sleepTimer = 0;
+}
+window.addEventListener('mousemove',  function(e) { onMove(e.clientX, e.clientY); });
+window.addEventListener('touchmove',  function(e) { e.preventDefault(); onMove(e.touches[0].clientX, e.touches[0].clientY); }, { passive: false });
+window.addEventListener('touchstart', function(e) { onMove(e.touches[0].clientX, e.touches[0].clientY); });
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  sleep orbit
+// ═══════════════════════════════════════════════════════════════════ 
+
+var sleepTimer = 0, isAsleep = true;
+function sleepTarget(t) {
+  return new THREE.Vector3(Math.cos(t * 0.55) * 8, Math.sin(t * 0.9) * 4.5, 0);
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  procedural roughness map
+// ═══════════════════════════════════════════════════════════════════ 
+
+function makeRoughnessMap(seed) {
+  var SIZE = 512;
+  var c = document.createElement('canvas');
+  c.width = c.height = SIZE;
+  var ctx = c.getContext('2d');
+  ctx.fillStyle = '#888888';
+  ctx.fillRect(0, 0, SIZE, SIZE);
+  var s = seed * 9301 + 49297;
+  function rand() { s = (s * 9301 + 49297) % 233280; return s / 233280; }
+  for (var b = 0; b < 120; b++) {
+    var x = rand()*SIZE, y = rand()*SIZE, r = 20+rand()*60, v = Math.floor(80+rand()*100);
+    var grd = ctx.createRadialGradient(x,y,0,x,y,r);
+    grd.addColorStop(0,'rgba('+v+','+v+','+v+',0.18)');
+    grd.addColorStop(1,'rgba('+v+','+v+','+v+',0)');
+    ctx.fillStyle = grd; ctx.fillRect(x-r,y-r,r*2,r*2);
+  }
+  for (var p = 0; p < 6000; p++) {
+    var px=rand()*SIZE,py=rand()*SIZE,pv=Math.floor(40+rand()*180),pr=0.5+rand()*2.5;
+    ctx.beginPath(); ctx.arc(px,py,pr,0,Math.PI*2);
+    ctx.fillStyle='rgba('+pv+','+pv+','+pv+','+(0.3+rand()*0.5)+')'; ctx.fill();
+  }
+  for (var k = 0; k < 40; k++) {
+    var sx=rand()*SIZE,sy=rand()*SIZE,ex=sx+(rand()-0.5)*120,ey=sy+(rand()-0.5)*40;
+    var sv=Math.floor(160+rand()*80);
+    ctx.beginPath(); ctx.moveTo(sx,sy); ctx.lineTo(ex,ey);
+    ctx.strokeStyle='rgba('+sv+','+sv+','+sv+',0.12)'; ctx.lineWidth=0.5+rand()*1.5; ctx.stroke();
+  }
+  var tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.NoColorSpace; // roughness maps must not be sRGB
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(3, 1);
+  return tex;
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  build tube(s)
+// ═══════════════════════════════════════════════════════════════════ 
+
+var TUBE_HUES = [
+  { h: 0.13, s: 0.95, l: 0.55 },
+  { h: 0.60, s: 0.85, l: 0.50 },
+  { h: 0.07, s: 1.00, l: 0.52 },
+  { h: 0.93, s: 0.90, l: 0.58 },
+  { h: 0.33, s: 0.85, l: 0.45 },
+  { h: 0.50, s: 0.90, l: 0.52 },
+];
+
+var tubes = LERP_SPEEDS.map(function(speed, i) {
+  var h = TUBE_HUES[i];
+  var roughMap = makeRoughnessMap(i + 1);
+  var mat = new THREE.MeshPhysicalMaterial({
+    color:           0xffffff,
+    metalness:       0.1,
+    roughness:       0.1,
+    roughnessMap:    roughMap,
+    envMap:          envMap,
+    envMapIntensity: 0.07,
+    side:            THREE.DoubleSide,
+  });
+  mat.color.setHSL(h.h, h.s, h.l);
+  return {
+    head:      new THREE.Vector3(0, 0, 0),
+    history:   (function() { var a=[]; for(var k=0;k<PARAMS.history;k++) a.push(new THREE.Vector3()); return a; }()),
+    mesh:      null,
+    mat:       mat,
+    lerpSpeed: speed,
+  };
+});
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  (re)build geometry
+// ═══════════════════════════════════════════════════════════════════ 
+
+function rebuildTube(tube) {
+  var pts = tube.history.slice().reverse();
+  var clean = [pts[0].clone()];
+  for (var i = 1; i < pts.length; i++)
+    if (pts[i].distanceTo(clean[clean.length-1]) > 0.005) clean.push(pts[i].clone());
+  if (clean.length < 2) return;
+  var curve = new THREE.CatmullRomCurve3(clean, false, 'catmullrom', 0.5);
+  var geo   = buildTaperedTubeGeo(curve, TUBE_SEGS, PARAMS.tubeRadius, TUBE_RSEG);
+  if (tube.mesh) {
+    tube.mesh.geometry.dispose();
+    tube.mesh.geometry = geo;
+  } else {
+    tube.mesh = new THREE.Mesh(geo, tube.mat);
+    tube.mesh.frustumCulled = false;
+    scene.add(tube.mesh);
+  }
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  color randomization
+// ═══════════════════════════════════════════════════════════════════ 
+
+window.addEventListener('click', function() {
+  var offset = Math.random();
+  tubes.forEach(function(t, i) { t.mat.color.setHSL((TUBE_HUES[i].h + offset) % 1.0, TUBE_HUES[i].s, TUBE_HUES[i].l); });
+});
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  setup tweakpane
+// ═══════════════════════════════════════════════════════════════════
+
+var pane = new Pane({ title: 'Controls', expanded:/Mobi|Android|iPhone|iPad|iPod|Touch/i.test(navigator.userAgent) ? false : true });
+
+var fCube = pane.addFolder({ title: 'Background Cubemap', expanded: false });
+fCube.addButton({ title: '📂 Load 6 images (cubemap) or 1 equirect' }).on('click', function() { cubeInput.value=''; cubeInput.click(); });
+fCube.addButton({ title: '↩ Reset background' }).on('click', function() {
+  skyHasTexUniform.value = 0;
+  PARAMS.useSkybox = false;
+  pane.refresh();
+  cubeStatus.label = 'Reset to default';
+  pane.refresh();
+});
+fCube.addBinding(cubeStatus, 'label', { label: 'Status', readonly: true });
+
+pane.addBinding(PARAMS, 'history', { label: 'Trail length', min: 10, max: 300, step: 1 })
+  .on('change', function(ev) {
+    tubes.forEach(function(tube) {
+      while (tube.history.length < ev.value) tube.history.push(tube.history[tube.history.length-1].clone());
+      tube.history.length = ev.value;
+    });
+  });
+pane.addBinding(PARAMS, 'tubeRadius', { label: 'Tube radius', min: 0.02, max: 1.5, step: 0.01 });
+pane.addBinding(PARAMS, 'envMapIntensity', { label: 'Env Map Intensity', min: 0, max: 5, step: 0.01 })
+  .on('change', function(ev) { tubes.forEach(function(t) { t.mat.envMapIntensity = ev.value; }); });
+pane.addBinding(PARAMS, 'bgScale', { label: 'BG Scale', min: 10, max: 400, step: 1 })
+  .on('change', function(ev) { skybox.scale.setScalar(ev.value / 400); });
+pane.addBinding(PARAMS, 'bgRotation', { label: 'BG Rotation', min: -Math.PI, max: Math.PI, step: 0.001 })
+  .on('change', function(ev) { skybox.rotation.y = ev.value; });
+
+pane.addBinding(PARAMS, 'useSkybox', { label: 'Use Skybox (if loaded)' })
+  .on('change', function(ev) {
+    skyHasTexUniform.value = (ev.value && skyTexNode.value !== skyPlaceholder) ? 1 : 0;
+  });
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  native color picker helper
+// ═══════════════════════════════════════════════════════════════════
+
+function addNativeColorPicker(folder, label, initialHex, onChange) {
+  var blade = folder.addBlade({
+    view: 'text',
+    label: label,
+    parse: function(v) { return v; },
+    stringify: function(v) { return v; },
+    value: initialHex,
+  });
+  requestAnimationFrame(function() {
+    var textInput = blade.element.querySelector('input[type="text"]');
+    if (!textInput) return;
+    var colorInput = document.createElement('input');
+    colorInput.type = 'color';
+    colorInput.value = initialHex;
+    colorInput.style.cssText = 'width:100%;height:24px;border:none;background:none;cursor:pointer;padding:0;';
+    colorInput.addEventListener('input', function(e) {
+      var hex = e.target.value;
+      var r = parseInt(hex.slice(1,3),16) / 255;
+      var g = parseInt(hex.slice(3,5),16) / 255;
+      var b = parseInt(hex.slice(5,7),16) / 255;
+      onChange(r, g, b);
+    });
+    textInput.replaceWith(colorInput);
+  });
+  return blade;
+}
+
+function rgbFloatToHex(r, g, b) {
+  function c(v) { return Math.round(v * 255).toString(16).padStart(2,'0'); }
+  return '#' + c(r) + c(g) + c(b);
+}
+function rgb255ToHex(r, g, b) {
+  function c(v) { return Math.round(v).toString(16).padStart(2,'0'); }
+  return '#' + c(r) + c(g) + c(b);
+}
+
+var fGrad = pane.addFolder({ title: 'BG Gradient', expanded: false });
+addNativeColorPicker(fGrad, 'Top',    rgbFloatToHex(PARAMS.bgTop.r,    PARAMS.bgTop.g,    PARAMS.bgTop.b),    function(r,g,b) { uBgTop.value.setRGB(r,g,b); });
+addNativeColorPicker(fGrad, 'Mid 1',  rgbFloatToHex(PARAMS.bgMid1.r,   PARAMS.bgMid1.g,   PARAMS.bgMid1.b),   function(r,g,b) { uBgMid1.value.setRGB(r,g,b); });
+addNativeColorPicker(fGrad, 'Mid 2',  rgbFloatToHex(PARAMS.bgMid2.r,   PARAMS.bgMid2.g,   PARAMS.bgMid2.b),   function(r,g,b) { uBgMid2.value.setRGB(r,g,b); });
+addNativeColorPicker(fGrad, 'Bottom', rgbFloatToHex(PARAMS.bgBottom.r, PARAMS.bgBottom.g, PARAMS.bgBottom.b), function(r,g,b) { uBgBottom.value.setRGB(r,g,b); });
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  apply initial scale and rotation
+// ═══════════════════════════════════════════════════════════════════
+
+skybox.scale.setScalar(PARAMS.bgScale / 400);
+skybox.rotation.y = PARAMS.bgRotation;
+
+var TUBE_DEFAULTS = [
+  {r:249,g:201,b: 31},{r: 19,g:106,b:236},{r:255,g:113,b: 10},
+  {r:244,g: 52,b:132},{r: 21,g:212,b: 17},{r: 22,g:243,b:243},
+];
+var tubeColorFolder = pane.addFolder({ title: 'Tube Colors', expanded: false });
+tubes.forEach(function(tube, i) {
+  var param = { metalness: tube.mat.metalness, roughness: tube.mat.roughness };
+  var tf = tubeColorFolder.addFolder({ title: 'Tube ' + (i+1), expanded: false });
+  addNativeColorPicker(tf, 'Color', rgb255ToHex(TUBE_DEFAULTS[i].r, TUBE_DEFAULTS[i].g, TUBE_DEFAULTS[i].b), function(r,g,b) {
+    tube.mat.color.setRGB(r, g, b);
+  });
+  tf.addBinding(param, 'metalness', { label: 'Metalness', min: 0, max: 1, step: 0.01 }).on('change', function(ev) { tube.mat.metalness = ev.value; });
+  tf.addBinding(param, 'roughness', { label: 'Roughness', min: 0, max: 1, step: 0.01 }).on('change', function(ev) { tube.mat.roughness = ev.value; });
+});
+
+var LIGHT_PARAMS = {
+  ambient: { intensity: ambientLight.intensity },
+  dir1: { x: dir1.position.x, y: dir1.position.y, z: dir1.position.z, intensity: dir1.intensity },
+  dir2: { x: dir2.position.x, y: dir2.position.y, z: dir2.position.z, intensity: dir2.intensity },
+  dir3: { x: dir3.position.x, y: dir3.position.y, z: dir3.position.z, intensity: dir3.intensity },
+};
+var fa = pane.addFolder({ title: 'Ambient Light', expanded: false });
+fa.addBinding(LIGHT_PARAMS.ambient, 'intensity', { label: 'Intensity', min: 0, max: 5, step: 0.01 }).on('change', function(ev) { ambientLight.intensity = ev.value; });
+['dir1','dir2','dir3'].forEach(function(k, idx) {
+  var light = [dir1,dir2,dir3][idx];
+  var f = pane.addFolder({ title: 'Light '+(idx+1), expanded: false });
+  f.addBinding(LIGHT_PARAMS[k], 'intensity', { label: 'Intensity', min: 0, max: 10, step: 0.01 }).on('change', function(ev) { light.intensity = ev.value; });
+  f.addBinding(LIGHT_PARAMS[k], 'x', { min: -20, max: 20, step: 0.1 }).on('change', function(ev) { light.position.x = ev.value; });
+  f.addBinding(LIGHT_PARAMS[k], 'y', { min: -20, max: 20, step: 0.1 }).on('change', function(ev) { light.position.y = ev.value; });
+  f.addBinding(LIGHT_PARAMS[k], 'z', { min: -20, max: 20, step: 0.1 }).on('change', function(ev) { light.position.z = ev.value; });
+});
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  render-loop
+// ═══════════════════════════════════════════════════════════════════  
+
+var clock = 0;
+let firstFrame = true;
+renderer.setAnimationLoop(function() {
+  clock += 0.016;
+  sleepTimer += 0.016;
+  if (sleepTimer > 2.5) isAsleep = true;
+
+  currentZ += (targetZ - currentZ) * 0.06;
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  smooth camera parallax — follows mouse X/Y slightly so 
+  //  background feels alive
+  // ═══════════════════════════════════════════════════════════════════    
+
+  var targetRotY = -ndc.x * 0.18;
+  var targetRotX =  ndc.y * 0.10;
+  camera.rotation.y += (targetRotY - camera.rotation.y) * 0.04;
+  camera.rotation.x += (targetRotX - camera.rotation.x) * 0.04;
+
+  var mouseTarget = isAsleep ? sleepTarget(clock) : ndcToWorld(ndc.x, ndc.y);
+
+  var camDir   = new THREE.Vector3(); camera.getWorldDirection(camDir);
+  var camRight = new THREE.Vector3().crossVectors(camDir, new THREE.Vector3(0,1,0)).normalize();
+  var camUp    = new THREE.Vector3().crossVectors(camRight, camDir).normalize();
+
+  tubes.forEach(function(tube, i) {
+    var phase    = (i / NUM_TUBES) * Math.PI * 2;
+    var orbitR   = 1.2;
+    var speed    = clock * 1.4;
+    var ox       = camRight.clone().multiplyScalar(Math.cos(speed + phase) * orbitR);
+    var oy       = camUp.clone().multiplyScalar(Math.sin(speed + phase) * orbitR);
+    var orbitOffset = ox.add(oy);
+
+    var tubeZSpread = (i - (NUM_TUBES - 1) / 2) * 1.0;
+    var depthOffset = camDir.clone().multiplyScalar(currentZ + tubeZSpread);
+
+    var chainTarget = i === 0
+      ? mouseTarget.clone().add(depthOffset)
+      : tubes[i-1].head.clone();
+    chainTarget.add(orbitOffset);
+
+    tube.head.lerp(chainTarget, tube.lerpSpeed);
+    tube.history.unshift(tube.head.clone());
+    tube.history.length = PARAMS.history;
+    rebuildTube(tube);
+  });
+
+  renderer.render(scene, camera);
+  if(firstFrame){ firstFrame=false; document.getElementById('loader').classList.add('hidden'); }
+});
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  resize
+// ═══════════════════════════════════════════════════════════════════  
+
+window.addEventListener('resize', function() {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
