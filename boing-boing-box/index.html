@@ -1,0 +1,1656 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Boing-boing Box.</title>
+<link rel="stylesheet" href="styles/style.css"/>
+</head>
+<body>
+<div id="pane-container"></div>
+<div id="vignette"></div>
+<div id="title-block">
+  <span id="title-eyebrow">Tinker Day #38</span>
+  <span id="title-headline">Boing-boing Box.</span>
+  <p style="font-size: 14px;">
+    Move mouse and click<br /> 
+    to interact with the cube<br />
+    and start sound. Enjoy!
+  </p>
+</div>
+<footer><a id="nav-prev" href="https://dasprinzip.com/tinker/day37/">&larr; The Day Before.</a></footer>
+<div id="loader"><div class="spinner"></div><div class="loading-text">loading<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></div></div>
+<canvas id="c"></canvas>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/",
+    "tweakpane": "https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.min.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three/webgpu';
+import {
+  Fn, vec2, vec3, vec4, float, uv, positionWorld, positionLocal, normalWorld, normalLocal,
+  mix, smoothstep, length, dot, pow, clamp, max, sub, mul, add, abs, step,
+  normalize, reflect, cameraPosition, screenUV, reflector, uniform, color, texture, attribute
+} from 'three/tsl';
+import { gaussianBlur } from 'three/addons/tsl/display/GaussianBlurNode.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { FlakesTexture } from 'three/addons/textures/FlakesTexture.js';
+import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { Pane } from 'tweakpane';
+
+const canvas = document.getElementById('c');
+
+const renderer = new THREE.WebGPURenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.NeutralToneMapping;
+renderer.toneMappingExposure = 1.05;
+await renderer.init();
+
+const scene = new THREE.Scene();
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  background: radial gradient backdrop
+// ═══════════════════════════════════════════════════════════════════
+
+const bgMat = new THREE.MeshBasicNodeMaterial({ side: THREE.BackSide });
+bgMat.colorNode = Fn(() => {
+  // vertical+radial blend keyed off screen position
+  const p = screenUV.sub(vec2(0.5, 0.44));
+  const d = length(p.mul(vec2(1.0, 1.12)));
+  const inner = vec3(0.95, 0.965, 0.99);  // bright near-white center
+  const outer = vec3(0.66, 0.76, 0.89);   // cool steel-blue edge
+  return mix(inner, outer, smoothstep(0.04, 0.92, d));
+})();
+bgMat.depthWrite = false;
+const backdrop = new THREE.Mesh(new THREE.SphereGeometry(40, 32, 16), bgMat);
+scene.add(backdrop);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  environment for reflections / transmission
+// ═══════════════════════════════════════════════════════════════════
+
+function makeEnv() {
+  const size = 512;
+  const data = new Float32Array(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    const v = y / (size - 1);          // 0 top .. 1 bottom
+    for (let x = 0; x < size; x++) {
+      const u = x / (size - 1);
+      // vertical studio gradient
+      let r, g, b;
+      const top = [0.98, 0.99, 1.0];
+      const horizon = [0.80, 0.86, 0.95];
+      const floor = [0.62, 0.70, 0.84];
+      let c;
+      if (v < 0.5) {
+        const t = v / 0.5;
+        c = [
+          top[0] + (horizon[0]-top[0])*t,
+          top[1] + (horizon[1]-top[1])*t,
+          top[2] + (horizon[2]-top[2])*t
+        ];
+      } else {
+        const t = (v - 0.5) / 0.5;
+        c = [
+          horizon[0] + (floor[0]-horizon[0])*t,
+          horizon[1] + (floor[1]-horizon[1])*t,
+          horizon[2] + (floor[2]-horizon[2])*t
+        ];
+      }
+      // soft bright key light patch upper area
+      const dx = u - 0.32, dy = v - 0.22;
+      const key = Math.exp(-(dx*dx*8 + dy*dy*14)) * 0.9;
+      // fill light upper right
+      const dx2 = u - 0.78, dy2 = v - 0.30;
+      const fill = Math.exp(-(dx2*dx2*10 + dy2*dy2*16)) * 0.4;
+      r = Math.min(1.6, c[0] + key + fill);
+      g = Math.min(1.6, c[1] + key + fill);
+      b = Math.min(1.7, c[2] + key + fill);
+      const i = (y * size + x) * 4;
+      data[i] = r; data[i+1] = g; data[i+2] = b; data[i+3] = 1;
+    }
+  }
+  const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.FloatType);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+const pmrem = new THREE.PMREMGenerator(renderer);
+const roomEnvRT = pmrem.fromScene(new RoomEnvironment(), 0.04);
+// (B) procedural blue-studio gradient (the previous look) — kept selectable.
+const proceduralEnvRT = pmrem.fromEquirectangular(makeEnv());
+
+const envOptions = { 'Room (studio)': roomEnvRT.texture, 'Blue gradient': proceduralEnvRT.texture };
+scene.environment = roomEnvRT.texture;
+scene.environmentIntensity = 1.0;
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  decal texture for cube faces (relief 'e' + text + dot grid)
+// ═══════════════════════════════════════════════════════════════════
+
+function makeFaceTexture(kind) {
+  const S = 1024;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = S;
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, S, S);
+
+  if (kind === 'logo') {
+    // faint embossed lowercase 'e' style mark — drawn as soft light shape
+    ctx.fillStyle = 'rgba(255,255,255,0.0)';
+    ctx.fillRect(0,0,S,S);
+    ctx.save();
+    ctx.translate(S*0.5, S*0.52);
+    ctx.globalAlpha = 0.10;
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `700 ${S*0.62}px "Helvetica Neue", Arial, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('e', 0, 0);
+    ctx.restore();
+  } else if (kind === 'text') {
+    // tiny code-like text lines, white, low opacity
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.font = `${S*0.018}px ui-monospace, Menlo, monospace`;
+    ctx.globalAlpha = 0.85;
+    const lines = [
+      '<robot>', '  <gazebo reference="base_link">', '    <material>Gazebo/Blue</material>',
+      '    <selfCollide>false</selfCollide>', '  </gazebo>', '  <gazebo>',
+      '    <plugin name="diff_drive" filename="libgazebo_ros_diff_drive.so">',
+      '      <ros>', '        <namespace>/demo</namespace>', '      </ros>',
+      '      <update_rate>30</update_rate>', '      <left_joint>left_wheel_joint</left_joint>',
+      '      <right_joint>right_wheel_joint</right_joint>', '    </plugin>',
+      '  </gazebo>', '', '  <link name="base_footprint"/>',
+      '  <joint name="base_joint" type="fixed">', '    <parent link="base_footprint"/>',
+      '    <child link="base_link"/>', '  </joint>', '</robot>'
+    ];
+    let y = S*0.20;
+    for (const ln of lines) {
+      ctx.fillText(ln, S*0.16, y);
+      y += S*0.026;
+    }
+  } else if (kind === 'dots') {
+    // perspective-feel dotted grid (we just lay a regular grid; UV gives the face)
+    ctx.fillStyle = 'rgba(255,255,255,0.95)';
+    const cols = 22, rows = 22;
+    const m = S*0.14;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const x = m + (S - 2*m) * (c/(cols-1));
+        const y = m + (S - 2*m) * (r/(rows-1));
+        ctx.beginPath();
+        ctx.arc(x, y, S*0.006, 0, Math.PI*2);
+        ctx.fill();
+      }
+    }
+  }
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  return tex;
+}
+
+const texLogo = makeFaceTexture('logo');
+const texText = makeFaceTexture('text');
+const texDots = makeFaceTexture('dots');
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  animated sound bars / waveform decal
+// ═══════════════════════════════════════════════════════════════════
+
+function makeWaveDecal() {
+  const S = 1024;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = S;
+  const ctx = cv.getContext('2d');
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+
+  // stable per-bar randomness
+  const barSeed = Array.from({ length: 64 }, (_, i) =>
+    ((Math.sin(i * 12.9898) * 43758.5453) % 1 + 1) % 1);
+
+  function draw(time, audio) {
+    ctx.clearRect(0, 0, S, S);
+    ctx.lineCap = 'round';
+
+    const react = audio && audio.running;
+    const pulse = react ? audio.pulse : 0;        // 0..1 spike on each hit
+    const spec  = react ? audio.spectrum : null;  // live frequency magnitudes
+
+    // --- audio bars row: idle shimmer always; height jumps with the sound ---
+    const bars = 40;
+    const bw = S / bars;
+    const baseY = S * 0.58;        // baseline sits just below centre
+    const maxH = S * 0.20;         // capped so tall bars don't reach the edge
+    const trim = 2;                // skip 2 bars at each end of the row
+    for (let i = trim; i < bars - trim; i++) {
+      const seed = barSeed[(i + Math.floor(time * 6)) % barSeed.length];
+      // idle motion (small) + gentler sound reaction
+      const idle = 0.15 + Math.abs(Math.sin(time * 3 + i * 0.7)) * seed * 0.4;
+      let sound = 0;
+      if (spec) {
+        const bin = spec[i % spec.length];
+        sound = bin * 0.6 + pulse * (0.15 + seed * 0.25);
+      }
+      const norm = Math.min(idle + sound, 1.0);   // tighter cap, less wild swing
+      const h = norm * maxH;
+      ctx.fillStyle = `rgba(255,255,255,${0.5 + Math.min(norm, 1) * 0.45})`;
+      ctx.fillRect(i * bw + bw * 0.25, baseY - h, bw * 0.5, h);
+    }
+    // baseline (spans the trimmed row)
+    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+    ctx.lineWidth = S * 0.0025;
+    ctx.beginPath();
+    ctx.moveTo(trim * bw, baseY); ctx.lineTo((bars - trim) * bw, baseY); ctx.stroke();
+
+    // --- corner tick marks (sci-fi framing), brighten on a hit ---
+    ctx.strokeStyle = `rgba(255,255,255,${0.6 + pulse * 0.4})`;
+    ctx.lineWidth = S * 0.004;
+    const tick = S * 0.05, off = S * 0.06;
+    const corners = [[off, off, 1, 1], [S - off, off, -1, 1],
+                     [off, S - off, 1, -1], [S - off, S - off, -1, -1]];
+    for (const [cx, cy, sx, sy] of corners) {
+      ctx.beginPath();
+      ctx.moveTo(cx, cy + sy * tick); ctx.lineTo(cx, cy); ctx.lineTo(cx + sx * tick, cy);
+      ctx.stroke();
+    }
+
+    tex.needsUpdate = true;
+  }
+
+  draw(0);
+  return { tex, draw };
+}
+const waveDecal = makeWaveDecal();
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  animated vertical gauge bar 
+// ═══════════════════════════════════════════════════════════════════
+
+function makeGaugeDecal() {
+  const S = 1024;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = S;
+  const ctx = cv.getContext('2d');
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+
+  function draw(time, audio) {
+    ctx.clearRect(0, 0, S, S);
+    const cx = S * 0.5, cy = S * 0.5;
+    const halfH = 0.28 * S;            // FIXED container height (no pulsing)
+    const barW = S * 0.05;
+    const top = cy - halfH, bot = cy + halfH;
+
+    const react = audio && audio.running;
+    const pulse = react ? audio.pulse : 0;
+    const level01 = react ? audio.level : 0;
+
+    // fixed outline of the gauge bar (brightens on a hit)
+    ctx.strokeStyle = `rgba(255,255,255,${0.8 + pulse * 0.2})`;
+    ctx.lineWidth = S * 0.004;
+    ctx.strokeRect(cx - barW * 0.5, top, barW, bot - top);
+
+    // fill level: a gentle idle breathe, jumping modestly with the sound
+    const idle = 0.42 + 0.12 * Math.sin(time * 1.2);
+    const fill = Math.min(idle + level01 * 0.5 + pulse * 0.22, 0.85);
+    const fLevel = bot - (bot - top) * fill;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(cx - barW * 0.5, fLevel, barW, bot - fLevel);
+    ctx.clip();
+    // diagonal striped lines inside the filled portion (scroll upward)
+    ctx.strokeStyle = `rgba(255,255,255,${0.55 + pulse * 0.35})`;
+    ctx.lineWidth = S * 0.0026;
+    const gap = S * 0.018;
+    const scroll = (time * 26) % gap;
+    const slant = barW;               // 45° diagonal across the bar width
+    for (let y = top - gap + scroll; y < bot + slant; y += gap) {
+      ctx.beginPath();
+      ctx.moveTo(cx - barW * 0.5, y);
+      ctx.lineTo(cx + barW * 0.5, y - slant);   // diagonal
+      ctx.stroke();
+    }
+    // soft wash so the level reads clearly
+    ctx.fillStyle = `rgba(255,255,255,${0.22 + pulse * 0.2})`;
+    ctx.fillRect(cx - barW * 0.5, fLevel, barW, bot - fLevel);
+    ctx.restore();
+
+    // static guide ticks beside the bar
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+    ctx.lineWidth = S * 0.0025;
+    for (let i = 0; i <= 8; i++) {
+      const y = top + (bot - top) * (i / 8);
+      const len = (i % 2 === 0) ? S * 0.035 : S * 0.02;
+      ctx.beginPath();
+      ctx.moveTo(cx + barW * 0.5 + S * 0.02, y);
+      ctx.lineTo(cx + barW * 0.5 + S * 0.02 + len, y);
+      ctx.stroke();
+    }
+
+    tex.needsUpdate = true;
+  }
+
+  draw(0);
+  return { tex, draw };
+}
+const gaugeDecal = makeGaugeDecal();
+
+// ═══════════════════════════════════════════════════════════════════
+//  the cube
+// ═══════════════════════════════════════════════════════════════════
+
+const SIZE = 2.0;
+// BoxGeometry subdivides each face into an EVEN grid (unlike RoundedBoxGeometry,
+// which packs vertices into the beveled rim and leaves the face centre empty).
+// More segments = smoother, more organic bulges where gummies press.
+const geo = new THREE.BoxGeometry(SIZE, SIZE, SIZE, 56, 56, 56);
+
+const glass = new THREE.MeshPhysicalNodeMaterial({
+  color: new THREE.Color(0xffffff),
+  metalness: 0.0,
+  roughness: 0.0,           // clear glass
+  transmission: 1.0,        // fully transmissive
+  thickness: 1.63,
+  ior: 1.45,
+  attenuationColor: new THREE.Color(0xccd2e4),
+  attenuationDistance: 0.85,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.45,
+  envMapIntensity: 1.1,
+  side: THREE.DoubleSide
+});
+
+glass.sheen = 0.0;
+glass.sheenColor = new THREE.Color(0x5c93ff);
+glass.sheenRoughness = 0.7;
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  flakes texture micro-facet normal map (sparkly surface)
+// ═══════════════════════════════════════════════════════════════════
+
+const flakesNormal = new THREE.CanvasTexture(new FlakesTexture(512, 512));
+flakesNormal.wrapS = THREE.RepeatWrapping;
+flakesNormal.wrapT = THREE.RepeatWrapping;
+flakesNormal.minFilter = THREE.LinearFilter;   // no mipmaps → flakes stay sharp
+flakesNormal.magFilter = THREE.LinearFilter;
+flakesNormal.generateMipmaps = false;
+flakesNormal.repeat.setScalar(75);
+flakesNormal.anisotropy = 16;
+glass.normalMap = flakesNormal;
+glass.normalScale = new THREE.Vector2().setScalar(0.050); // subtle flake sparkle
+
+// ═══════════════════════════════════════════════════════════════════
+//  patterns baked into the glass surface via emissive, 
+//  each masked to its face — uses per-vertex UV/mask attributes 
+// so they're PART of the mesh and deform exactly with the wall bulge 
+// (no floating planes that can tear)
+// ═══════════════════════════════════════════════════════════════════
+
+texDots.wrapS = texDots.wrapT = THREE.ClampToEdgeWrapping;
+waveDecal.tex.wrapS = waveDecal.tex.wrapT = THREE.ClampToEdgeWrapping;
+gaugeDecal.tex.wrapS = gaugeDecal.tex.wrapT = THREE.ClampToEdgeWrapping;
+const dotsIntensityU = uniform(0.9);
+const waveIntensityU = uniform(0.9);
+const gaugeIntensityU = uniform(0.85);
+const faceUVNode = attribute('faceUV');
+const faceMaskNode = attribute('faceMask');
+const dotEmissive  = texture(texDots, faceUVNode).rgb
+                        .mul(faceMaskNode.x).mul(dotsIntensityU);
+const waveEmissive = texture(waveDecal.tex, faceUVNode).rgb
+                        .mul(faceMaskNode.y).mul(waveIntensityU);
+const gaugeEmissive = texture(gaugeDecal.tex, faceUVNode).rgb
+                        .mul(faceMaskNode.z).mul(gaugeIntensityU);
+glass.emissiveNode = dotEmissive.add(waveEmissive).add(gaugeEmissive);
+
+if (!isFinite(glass.attenuationDistance)) glass.attenuationDistance = 0.9;
+if (glass.iridescence == null) glass.iridescence = 0;
+if (glass.iridescenceIOR == null) glass.iridescenceIOR = 1.3;
+if (glass.specularIntensity == null) glass.specularIntensity = 1.0;
+if (glass.envMapIntensity == null) glass.envMapIntensity = 1.1;
+if (glass.reflectivity == null) glass.reflectivity = 0.5;
+
+const cube = new THREE.Mesh(geo, glass);
+// balance on a corner: rotate so a vertex points down
+cube.rotation.set(Math.atan(1/Math.SQRT2), Math.PI/4, 0);
+cube.position.y = 0.0;
+scene.add(cube);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//   cube wall bulge state
+// ═══════════════════════════════════════════════════════════════════
+
+const cubePos = geo.attributes.position;
+const cubeN = cubePos.count;
+const cubeRest = new Float32Array(cubeN * 3);
+const cubeDir  = new Float32Array(cubeN * 3);   // outward unit dir per vertex
+const cubeBulge = new Float32Array(cubeN);      // current smoothed bulge amount
+// gentle corner rounding: pull vertices near edges/corners slightly inward so
+// the dense box reads as a soft rounded cube rather than a hard one.
+const ROUND = 0.075;                             // corner radius (smoother)
+const HALFE = SIZE * 0.5;
+for (let i = 0; i < cubeN; i++) {
+  let x = cubePos.getX(i), y = cubePos.getY(i), z = cubePos.getZ(i);
+  // round-cube projection: clamp the core to (HALF-ROUND), then offset by ROUND
+  // along the normalized overflow — classic rounded-box remap.
+  const inner = HALFE - ROUND;
+  const qx = Math.max(Math.abs(x) - inner, 0) * Math.sign(x);
+  const qy = Math.max(Math.abs(y) - inner, 0) * Math.sign(y);
+  const qz = Math.max(Math.abs(z) - inner, 0) * Math.sign(z);
+  const ql = Math.hypot(qx, qy, qz);
+  if (ql > 1e-6) {
+    const s = ROUND / ql;
+    x = Math.sign(x) * inner + qx * s;
+    y = Math.sign(y) * inner + qy * s;
+    z = Math.sign(z) * inner + qz * s;
+  }
+  cubePos.setXYZ(i, x, y, z);
+  cubeRest[i*3] = x; cubeRest[i*3+1] = y; cubeRest[i*3+2] = z;
+  // outward direction = dominant axis of this vertex (which wall it belongs to)
+  const ax = Math.abs(x), ay = Math.abs(y), az = Math.abs(z);
+  let dx = 0, dy = 0, dz = 0;
+  if (ax >= ay && ax >= az) dx = Math.sign(x);
+  else if (ay >= ax && ay >= az) dy = Math.sign(y);
+  else dz = Math.sign(z);
+  cubeDir[i*3] = dx; cubeDir[i*3+1] = dy; cubeDir[i*3+2] = dz;
+}
+cubePos.needsUpdate = true;
+geo.computeVertexNormals();
+
+// ═══════════════════════════════════════════════════════════════════
+//   bake face patterns INTO the glass material 
+//   (not floating planes) so they deform perfectly with the wall. 
+//   WebGPU caps vertex buffers at 8, so we pack everything into 
+//   two attributes: faceUV (the 0..1 coords for whichever face a
+//   vertex is on) and faceMask (vec3: x=dots, y=wavebars, z=gauge). 
+//   Each vertex  belongs to one face, so a single shared UV serves 
+//   all three patterns.
+// ═══════════════════════════════════════════════════════════════════
+
+{
+  const faceUV = new Float32Array(cubeN * 2);
+  const faceMask = new Float32Array(cubeN * 3);   // x=dots, y=wave, z=gauge
+  const span = SIZE * 0.94;                        // shared coverage → same size
+  for (let i = 0; i < cubeN; i++) {
+    const x = cubeRest[i*3], y = cubeRest[i*3+1], z = cubeRest[i*3+2];
+    let u = 0, v = 0, md = 0, mw = 0, mg = 0;
+    if (cubeDir[i*3+1] < -0.5) {            // -Y face → dots (lateral x,z)
+      u = (x / span) + 0.5; v = (z / span) + 0.5; md = 1;
+    } else if (cubeDir[i*3+1] > 0.5) {     // +Y face → wavebars (lateral x,z)
+      u = (x / span) + 0.5; v = (z / span) + 0.5; mw = 1;
+    } else if (cubeDir[i*3+2] > 0.5) {     // +Z face → gauge (lateral x,y)
+      u = (x / span) + 0.5; v = (y / span) + 0.5; mg = 1;
+    }
+    faceUV[i*2] = u; faceUV[i*2+1] = v;
+    faceMask[i*3] = md; faceMask[i*3+1] = mw; faceMask[i*3+2] = mg;
+  }
+  geo.setAttribute('faceUV', new THREE.BufferAttribute(faceUV, 2));
+  geo.setAttribute('faceMask', new THREE.BufferAttribute(faceMask, 3));
+}
+
+const cubeWallParams = { bulge: 0.53, reach: 1.65, ease: 0.10 };
+const HALF = SIZE * 0.5;
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  surface decals (must be top-level: 
+//  transmissive parents hide children)
+// ═══════════════════════════════════════════════════════════════════
+
+const decals = [];   // {mesh, axis, sgn, rest, pos} for bulge-following
+function decalPlane(tex, faceNormal, opacity, blend, inset, scale = 0.94) {
+  const m = new THREE.MeshBasicMaterial({
+    map: tex, transparent: true, opacity,
+    depthWrite: false,
+    blending: blend === 'add' ? THREE.AdditiveBlending : THREE.NormalBlending
+  });
+  // subdivided to roughly match the cube wall's per-face vertex density (~14
+  // across a face at 56 segments) so the decal deforms in lockstep with the
+  // glass instead of tearing where the two meshes disagree.
+  const p = new THREE.Mesh(new THREE.PlaneGeometry(SIZE*scale, SIZE*scale, 28, 28), m);
+  const n = faceNormal.clone().normalize();
+  // positive inset -> on outer surface; negative -> interior (read through glass)
+  p.position.copy(n.clone().multiplyScalar(SIZE*0.5 + inset));
+  p.lookAt(n.clone().multiplyScalar(SIZE * (inset >= 0 ? 1 : -1)));
+  p.updateMatrix();
+  // record the face this decal sits on, and its rest vertex positions in
+  // decalRig-local (cube-local) space, so we can push them out along the wall
+  // normal by the local bulge amount each frame.
+  const axis = Math.abs(n.x) > 0.5 ? 0 : Math.abs(n.y) > 0.5 ? 1 : 2;
+  const sgn = Math.sign(n.x + n.y + n.z);
+  const pos = p.geometry.attributes.position;
+  const rest = new Float32Array(pos.count * 3);
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i).applyMatrix4(p.matrix);  // into face-local→cube-local
+    rest[i*3] = v.x; rest[i*3+1] = v.y; rest[i*3+2] = v.z;
+  }
+  // switch the plane to identity transform; we now drive vertices directly in
+  // cube-local space (rest already baked the orientation/position).
+  p.position.set(0, 0, 0);
+  p.quaternion.identity();
+  p.updateMatrix();
+  for (let i = 0; i < pos.count; i++) pos.setXYZ(i, rest[i*3], rest[i*3+1], rest[i*3+2]);
+  pos.needsUpdate = true;
+  decals.push({ mesh: p, axis, sgn, rest, pos, inset });
+  return p;
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  decalRig follows the cube's transform but is 
+//  parented to the scene so the transmission pass still 
+//  includes these meshes.
+// ═══════════════════════════════════════════════════════════════════
+
+const decalRig = new THREE.Group();
+scene.add(decalRig);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  floor with reflection (ripple-displaced + gaussian-blurred)
+// ═══════════════════════════════════════════════════════════════════ 
+
+const floorY = -SIZE * 0.92;
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  blurred two-channel noise for the UV displacement
+// ═══════════════════════════════════════════════════════════════════ 
+
+function makeNoiseTexture() {
+  const small = document.createElement('canvas');
+  small.width = small.height = 64;
+  const sg = small.getContext('2d');
+  const img = sg.createImageData(64, 64);
+  for (let i = 0; i < img.data.length; i += 4) {
+    img.data[i]     = Math.random() * 255;  // x offset
+    img.data[i + 1] = Math.random() * 255;  // y offset
+    img.data[i + 2] = 128;
+    img.data[i + 3] = 255;
+  }
+  sg.putImageData(img, 0, 0);
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const g = c.getContext('2d');
+  g.filter = 'blur(1.5px)';
+  g.drawImage(small, 0, 0, 512, 512);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  controllable mirror parameters (driven by TP below)
+//  mirror the reference's reflection / distortion / reflBlur params.
+// ═══════════════════════════════════════════════════════════════════ 
+
+const reflStrengthU = uniform(0.15);   // how strongly the mirror shows
+const reflDistortU  = uniform(0.0195); // ripple amount
+const reflBlurU     = uniform(0.05);   // gaussian blur radius
+const reflSpreadU   = uniform(0.47);   // radius of the reflection pool
+const reflOpacityU  = uniform(1.0);    // overall floor visibility / fade
+const reflTintU     = uniform(new THREE.Color('#88aedc')); // floor base tint
+
+const reflection = reflector({ resolutionScale: 0.3 }); // low-res = naturally soft
+reflection.target.rotateX(-Math.PI / 2);
+reflection.target.position.y = floorY;
+scene.add(reflection.target);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  jitter the reflection lookup along biased axes 
+//  -> vertical streak wobble.  offsets are in screen UV, 
+//  so they stay tiny.
+// ═══════════════════════════════════════════════════════════════════ 
+
+const ripple = texture(makeNoiseTexture(), uv().mul(90)).xy.mul(2).sub(1).mul(vec2(0.35, 1.0));
+reflection.uvNode = reflection.uvNode.add(ripple.mul(reflDistortU));
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  real gaussian blur over the displaced reflection 
+//  (radius from a uniform)
+// ═══════════════════════════════════════════════════════════════════ 
+
+const softReflection = gaussianBlur(reflection, reflBlurU, 6);
+
+const floorMat = new THREE.MeshBasicNodeMaterial();
+floorMat.colorNode = Fn(() => {
+  const d = length(uv().sub(vec2(0.5)));
+  const base = reflTintU;
+  // blurred, rippled reflection blended over the tint, strongest under the cube
+  const reflAmt = reflStrengthU.mul(smoothstep(reflSpreadU, 0.05, d));
+  return mix(base, base.add(softReflection.rgb), reflAmt);
+})();
+floorMat.opacityNode = Fn(() => {
+  const d = length(uv().sub(vec2(0.5)));
+  return smoothstep(reflSpreadU, 0.08, d).mul(reflOpacityU.add(0.5).min(1.0));
+})();
+floorMat.transparent = true;
+floorMat.depthWrite = false;
+
+const floor = new THREE.Mesh(new THREE.CircleGeometry(14, 96), floorMat);
+floor.rotation.x = -Math.PI / 2;
+floor.position.y = floorY;
+scene.add(floor);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  contact shadow blob under cube
+// ═══════════════════════════════════════════════════════════════════ 
+
+const shadowCanvas = document.createElement('canvas');
+shadowCanvas.width = shadowCanvas.height = 256;
+const sctx = shadowCanvas.getContext('2d');
+const grd = sctx.createRadialGradient(128,128,10, 128,128,128);
+grd.addColorStop(0, 'rgba(20,40,90,0.45)');
+grd.addColorStop(0.5, 'rgba(20,40,90,0.18)');
+grd.addColorStop(1, 'rgba(20,40,90,0.0)');
+sctx.fillStyle = grd; sctx.fillRect(0,0,256,256);
+const shadowTex = new THREE.CanvasTexture(shadowCanvas);
+const shadow = new THREE.Mesh(
+  new THREE.PlaneGeometry(SIZE*2.6, SIZE*2.6),
+  new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, depthWrite: false })
+);
+shadow.rotation.x = -Math.PI/2;
+shadow.position.y = floorY + 0.004;
+scene.add(shadow);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  light(s)
+// ═══════════════════════════════════════════════════════════════════ 
+
+const key = new THREE.DirectionalLight(0xffffff, 2.6);
+key.position.set(-3, 6, 4);
+scene.add(key);
+const fill = new THREE.DirectionalLight(0xbcd2ff, 1.0);
+fill.position.set(5, 3, 2);
+scene.add(fill);
+const rim = new THREE.DirectionalLight(0x6fa0ff, 1.4);
+rim.position.set(2, 2, -5);
+scene.add(rim);
+scene.add(new THREE.AmbientLight(0xdfe9ff, 0.5));
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  soft-body gummie(s) — physics + soft-bodies
+// ═══════════════════════════════════════════════════════════════════ 
+
+const INNER = SIZE * 0.5 - 0.10;     // inner wall half-extent (cube-local)
+// cube-LOCAL center -> WORLD using the cube's live matrix (handles the
+// corner-balanced tilt + Y wobble), so containment matches the real walls.
+const _world = new THREE.Vector3();
+function localToWorld(c, out) {
+  return out.copy(c).applyMatrix4(cube.matrixWorld);
+}
+// transform a world-space velocity/dir into cube-local (for tilt bias only)
+const gummyColors = ['#ffd23f', '#1d6fb8'];
+const gummies = [];
+
+// ambient occlusion strength for the gummies (0 = off, 1 = full contact AO)
+const aoStrengthU = uniform(0.85);
+const aoParams = { strength: 0.85, radius: 1.6, darkness: 0.85 };
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  soft-body look(s)
+// ═══════════════════════════════════════════════════════════════════ 
+
+const LOOKS = {
+  'Gummy': (m, c) => {
+    m.color.copy(c); m.roughness = 0.3; m.metalness = 0;
+    m.transmission = 0; m.thickness = 0; m.ior = 1.4;
+    m.clearcoat = 0.9; m.clearcoatRoughness = 0.25;
+    m.sheen = 0.5; m.sheenColor.set('#ffffff');
+    m.iridescence = 0; m.attenuationColor.set('#ffffff');
+    m.emissive.copy(c).multiplyScalar(0.12); m.envMapIntensity = 1;
+    m.transparent = false; m.opacity = 1;
+  },
+  'Ceramic': (m, c) => {
+    m.color.copy(c); m.roughness = 0.18; m.metalness = 0;
+    m.transmission = 0; m.thickness = 0;
+    m.clearcoat = 1.0; m.clearcoatRoughness = 0.06;
+    m.sheen = 0; m.iridescence = 0;
+    m.emissive.copy(c).multiplyScalar(0.04); m.envMapIntensity = 1.4;
+    m.transparent = false; m.opacity = 1;
+  },
+  'Matte clay': (m, c) => {
+    m.color.copy(c); m.roughness = 0.92; m.metalness = 0;
+    m.transmission = 0; m.thickness = 0;
+    m.clearcoat = 0; m.sheen = 0.3; m.sheenColor.set('#ffffff');
+    m.iridescence = 0; m.emissive.copy(c).multiplyScalar(0.05);
+    m.envMapIntensity = 0.5; m.transparent = false; m.opacity = 1;
+  },
+  'Chrome': (m, c) => {
+    m.color.set('#ffffff'); m.roughness = 0.06; m.metalness = 1.0;
+    m.transmission = 0; m.thickness = 0;
+    m.clearcoat = 0; m.sheen = 0; m.iridescence = 0;
+    m.emissive.set('#000000'); m.envMapIntensity = 2.2;
+    m.transparent = false; m.opacity = 1;
+  },
+};
+const TRANSMISSIVE_LOOKS = new Set(['Glass marble', 'Iridescent', 'Velvet glow']);
+const lookState = { current: 'Gummy' };
+function applyLookAll(name) {
+  lookState.current = name;
+  const fn = LOOKS[name] || LOOKS['Gummy'];
+  const needsCore = TRANSMISSIVE_LOOKS.has(name);
+  for (const g of gummies) {
+    fn(g.mesh.material, g.baseColor);
+    g.mesh.material.needsUpdate = true;
+    g.core.visible = needsCore;
+    if (needsCore) {
+      g.core.material.color.copy(g.baseColor);
+      g.core.material.emissive.copy(g.baseColor).multiplyScalar(0.18);
+      g.core.scale.setScalar(name === 'Velvet glow' ? 0.72 : 0.55);
+    }
+  }
+}
+
+function makeGummy(idx) {
+  const t = Math.random();
+  const big = Math.random() < 0.3;
+  const radius = big ? 0.27 + t * 0.09 : 0.13 + t * t * 0.17;
+  // higher subdivision + mergeVertices → an INDEXED mesh whose shared vertices
+  // give smoothly averaged normals (a non-indexed icosahedron yields flat,
+  // faceted normals that look terrible under chrome/mirror shading).
+  const geo = mergeVertices(new THREE.IcosahedronGeometry(radius, 8), 1e-5);
+  geo.computeVertexNormals();
+  const baseColor = new THREE.Color(gummyColors[idx % gummyColors.length]);
+  const mat = new THREE.MeshPhysicalNodeMaterial();
+  LOOKS['Gummy'](mat, baseColor);
+  // per-vertex ambient occlusion: darkens crevices where gummies press into
+  // each other / the walls. Works through the transmissive cube because it's
+  // baked into each gummy's own shading (not a screen-space pass that would be
+  // blocked by the glass depth). aoNode multiplies into the lighting context.
+  const aoAttr = new THREE.BufferAttribute(new Float32Array(geo.attributes.position.count).fill(1), 1);
+  geo.setAttribute('ao', aoAttr);
+  // strength-scaled: ao=1 → no darkening; lerp toward the baked value by aoStrengthU
+  mat.aoNode = mix(float(1.0), attribute('ao'), aoStrengthU);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = 2;
+  scene.add(mesh);                 // top-level → visible through transmission
+
+  const coreGeo = mergeVertices(new THREE.IcosahedronGeometry(radius, 8), 1e-5);
+  const coreMat = new THREE.MeshStandardNodeMaterial({
+    color: new THREE.Color(gummyColors[idx % gummyColors.length]),
+    roughness: 0.45, metalness: 0.0,
+    emissive: new THREE.Color(gummyColors[idx % gummyColors.length]).multiplyScalar(0.15),
+  });
+  const core = new THREE.Mesh(coreGeo, coreMat);
+  core.renderOrder = 1; core.visible = false; core.scale.setScalar(0.62);
+  scene.add(core);
+
+  const pos = geo.attributes.position;
+  const N = pos.count;
+  const rest = new Float32Array(N * 3);
+  const cur = new Float32Array(N * 3);
+  const prev = new Float32Array(N * 3);
+  const center = new THREE.Vector3(
+    (Math.random() * 2 - 1) * INNER * 0.6,
+    (Math.random() * 2 - 1) * INNER * 0.6,
+    (Math.random() * 2 - 1) * INNER * 0.6,
+  );
+  for (let i = 0; i < N; i++) {
+    const rx = pos.getX(i), ry = pos.getY(i), rz = pos.getZ(i);
+    rest[i*3] = rx; rest[i*3+1] = ry; rest[i*3+2] = rz;
+    cur[i*3] = rx; cur[i*3+1] = ry; cur[i*3+2] = rz;
+    prev[i*3] = rx; prev[i*3+1] = ry; prev[i*3+2] = rz;
+  }
+  return {
+    mesh, geo, pos, N, rest, cur, prev, radius, baseColor,
+    core, coreGeo, corePos: coreGeo.attributes.position, center,
+    aoAttr, ao: new Float32Array(N).fill(1),   // per-vertex AO (smoothed)
+    vel: new THREE.Vector3((Math.random()*2-1)*0.01,(Math.random()*2-1)*0.01,(Math.random()*2-1)*0.01),
+    driftPhase: Math.random() * 100,
+    toneSeed: Math.random(),    // stable note pick for collision sounds
+    wallTouch: false,           // wall-contact state (edge-trigger tones)
+  };
+}
+for (let i = 0; i < 7; i++) {
+  const g = makeGummy(i);
+  cube.updateMatrixWorld();
+  g.mesh.position.copy(localToWorld(g.center, _world));
+  gummies.push(g);
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  physics param(s)
+// ═══════════════════════════════════════════════════════════════════ 
+
+const physics = {
+  repel: 0.0012, repelFalloff: 9.0, repelBias: 0.9,
+  frictionVar: 0.004, frictionBase: 0.985,
+  gravity: 0.0006, drift: 0.00084, jitter: 0.00165,
+  settle: 0.7,                       // 0 = float/swim, 1 = pile on the floor
+  tiltBias: 0.0004, velClamp: 0.06, velSmooth: 0.16,
+  timeScale: 0.45, contactMargin: 0.01, squash: 3.2,
+  baggy: 0.6,                        // sideways spread of the contact patch
+  stateSmooth: 0.09, skinDamp: 0.91, skinFollow: 0.1, boxMetric: 2.0,
+};
+const buoyDir = new THREE.Vector3(0, 1, 0);
+
+function sbox(px, py, pz, b) {
+  const dx = Math.abs(px) - b, dy = Math.abs(py) - b, dz = Math.abs(pz) - b;
+  const inside = Math.min(Math.max(dx, Math.max(dy, dz)), 0);
+  const ox = Math.max(dx, 0), oy = Math.max(dy, 0), oz = Math.max(dz, 0);
+  return inside + Math.sqrt(ox*ox + oy*oy + oz*oz);
+}
+function mapField(px, py, pz, self) {
+  let d = 100;
+  const sr = self ? self.radius : 0;
+  for (const o of gummies) {
+    if (o === self) continue;
+    const dx = px - o.center.x, dy = py - o.center.y, dz = pz - o.center.z;
+    d = Math.min(Math.sqrt(dx*dx + dy*dy + dz*dz) - o.radius - sr, d);
+  }
+  let box = -sbox(px, py, pz, INNER) - sr;
+  box = Math.pow(Math.max(box, 0), physics.boxMetric);
+  return Math.min(d, box);
+}
+const _e = 0.005;
+function fieldNormal(px, py, pz, self, out) {
+  const a = mapField(px + _e, py - _e, pz - _e, self);
+  const b = mapField(px - _e, py - _e, pz + _e, self);
+  const c = mapField(px - _e, py + _e, pz - _e, self);
+  const e = mapField(px + _e, py + _e, pz + _e, self);
+  out.set((a - b - c + e), (-a - b + c + e), (-a + b - c + e)).normalize();
+  return out;
+}
+const _nrm = new THREE.Vector3();
+const _cubeQuatInv = new THREE.Quaternion();
+const _gravLocal = new THREE.Vector3(0, -1, 0);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  procedural harmonic collision sound
+// ═══════════════════════════════════════════════════════════════════ 
+
+const audio = (() => {
+  let ctx = null, master = null, lp = null, lastPlay = 0;
+  let analyser = null, freqData = null;
+  let pulse = 0;                                  // spikes on each hit, decays
+  const opts = { enabled: true, volume: 0.5 };
+  // low pentatonic — deep register so collisions sound like a warm synth bass/pad
+  const scale = [
+    65.41, 73.42, 82.41, 98.00, 110.00,    // C2-ish pentatonic
+    130.81, 146.83, 164.81, 196.00, 220.00 // up one octave
+  ];
+  function ensure() {
+    if (ctx) return;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    ctx = new AC();
+    // iOS: route as playback so the mute/ringer switch doesn't silence us
+    try {
+      if (navigator.audioSession) navigator.audioSession.type = 'playback';
+    } catch (e) {}
+    master = ctx.createGain(); master.gain.value = opts.volume;
+    // master tone: keep it dark and round
+    lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 1400;
+    // analyser taps the master so the visuals can react to the real signal
+    analyser = ctx.createAnalyser();
+    analyser.fftSize = 64;
+    analyser.smoothingTimeConstant = 0.6;
+    freqData = new Uint8Array(analyser.frequencyBinCount);
+    lp.connect(master); master.connect(analyser); master.connect(ctx.destination);
+  }
+  function unlock() {
+    ensure();
+    if (!ctx) return;
+    if (ctx.state === 'suspended') ctx.resume();
+    // play a silent buffer inside the gesture to fully open the audio path
+    // (required on iOS Safari and some Android browsers)
+    const b = ctx.createBuffer(1, 1, 22050);
+    const s = ctx.createBufferSource(); s.buffer = b; s.connect(ctx.destination); s.start(0);
+    // a near-silent oscillator blip also helps some Android Chrome builds latch on
+    try {
+      const o = ctx.createOscillator(); const g = ctx.createGain();
+      g.gain.value = 0.0001; o.connect(g); g.connect(ctx.destination);
+      o.start(); o.stop(ctx.currentTime + 0.02);
+    } catch (e) {}
+  }
+  // play a deep analog-style synth tone; strength sets weight, seed picks note
+  function ping(strength, seed = Math.random()) {
+    if (!opts.enabled) return;
+    if (!ctx || ctx.state !== 'running') return;
+    if (master) master.gain.value = opts.volume;
+    const now = ctx.currentTime;
+    if (now - lastPlay < 0.03) return;          // throttle bursts
+    lastPlay = now;
+    const s = Math.min(Math.max(strength, 0), 1);
+    pulse = Math.min(1, pulse + 0.5 + s * 0.5);   // visual spike on each hit
+    const fund = scale[Math.floor(seed * scale.length) % scale.length];
+
+    // subtractive synth voice: detuned saw oscillators + a sub sine, run through
+    // a resonant lowpass with a downward filter sweep → warm, deep, analog feel.
+    const voice = ctx.createGain();
+    const peak = 0.06 + s * 0.14;
+    const attack = 0.03, decay = 1.6 + s * 1.0;
+    voice.gain.setValueAtTime(0.0001, now);
+    voice.gain.linearRampToValueAtTime(peak, now + attack);
+    voice.gain.exponentialRampToValueAtTime(0.0005, now + attack + decay);
+
+    // resonant filter that opens then closes — the classic synth "wow"
+    const flt = ctx.createBiquadFilter();
+    flt.type = 'lowpass';
+    flt.Q.value = 7 + s * 6;                    // resonance
+    flt.frequency.setValueAtTime(180, now);
+    flt.frequency.linearRampToValueAtTime(500 + s * 1200, now + 0.10); // quick open
+    flt.frequency.exponentialRampToValueAtTime(120, now + decay);      // slow close
+
+    // two detuned saws for a fat unison + a sine sub an octave down for depth
+    const oscDefs = [
+      { type: 'sawtooth', mult: 1.0,  detune: -8, gain: 0.5 },
+      { type: 'sawtooth', mult: 1.0,  detune:  8, gain: 0.5 },
+      { type: 'sine',     mult: 0.5,  detune:  0, gain: 0.6 },  // sub-bass
+    ];
+    for (const d of oscDefs) {
+      const o = ctx.createOscillator();
+      o.type = d.type;
+      o.frequency.value = fund * d.mult;
+      o.detune.value = d.detune;
+      const og = ctx.createGain(); og.gain.value = d.gain;
+      o.connect(og); og.connect(voice);
+      o.start(now); o.stop(now + attack + decay + 0.2);
+    }
+    // slow vibrato LFO on the filter for analog drift
+    const lfo = ctx.createOscillator(); lfo.type = 'sine'; lfo.frequency.value = 4.5;
+    const lfoGain = ctx.createGain(); lfoGain.gain.value = 30;
+    lfo.connect(lfoGain); lfoGain.connect(flt.frequency);
+    lfo.start(now); lfo.stop(now + attack + decay + 0.2);
+
+    voice.connect(flt); flt.connect(lp);
+  }
+  // unlock on the FIRST user interaction of any kind (covers desktop + mobile).
+  // Listeners stay until unlocked, then detach; also re-resume after the page
+  // is hidden/shown (mobile browsers suspend the context in the background).
+  let unlocked = false;
+  const onGesture = () => {
+    unlock();
+    if (ctx && ctx.state === 'running' && !unlocked) {
+      unlocked = true;
+      ['pointerdown','touchstart','touchend','mousedown','click','keydown']
+        .forEach(ev => removeEventListener(ev, onGesture));
+    }
+  };
+  ['pointerdown','touchstart','touchend','mousedown','click','keydown']
+    .forEach(ev => addEventListener(ev, onGesture, { passive: true }));
+  // also catch interaction on the canvas/orbit-controls element directly
+  if (typeof canvas !== 'undefined' && canvas) {
+    canvas.addEventListener('pointerdown', onGesture, { passive: true });
+    canvas.addEventListener('touchstart', onGesture, { passive: true });
+  }
+  // resume if the OS/browser suspended the context (tab switch, screen lock)
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && ctx && ctx.state === 'suspended') ctx.resume();
+  });
+
+  let level = 0;                                  // smoothed overall amplitude
+  const spectrum = new Float32Array(16);          // smoothed low-band magnitudes
+  // called each frame: decay the pulse, sample the analyser for live reactivity
+  function tick(dt) {
+    pulse = Math.max(0, pulse - dt * 2.2);        // ~0.45s decay
+    if (analyser && freqData) {
+      analyser.getByteFrequencyData(freqData);
+      let sum = 0;
+      const n = Math.min(spectrum.length, freqData.length);
+      for (let i = 0; i < n; i++) {
+        const v = freqData[i] / 255;
+        spectrum[i] += (v - spectrum[i]) * 0.4;   // smooth per-bin
+        sum += v;
+      }
+      const inst = sum / n;
+      level += (inst - level) * 0.3;              // smooth overall
+    } else {
+      level *= 0.9;
+    }
+  }
+  return {
+    ping, opts, tick,
+    get running() { return ctx && ctx.state === 'running'; },
+    get level() { return level; },
+    get pulse() { return pulse; },
+    spectrum
+  };
+})();
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  tracks which gummy pairs are currently in contact 
+//  (edge-trigger collision tones)
+// ═══════════════════════════════════════════════════════════════════ 
+
+const gummyPairTouch = new Set();
+function stepGummies() {
+  // camera-tilt bias (kept subtle; the real motion is SDF repulsion)
+  const polar = controls.getPolarAngle();
+  const k = THREE.MathUtils.clamp((Math.PI * 0.25 - polar) * 1.6, -1.2, 1.2);
+  // build a world up-ish bias then rotate into cube-local frame (full tilt)
+  _cubeQuatInv.copy(cube.quaternion).invert();
+  buoyDir.set(Math.sin(k) * 0.9, Math.cos(k), 0).normalize()
+         .applyQuaternion(_cubeQuatInv);
+
+  // WORLD-DOWN gravity, expressed in the cube's LOCAL frame, so the blobs
+  // always fall toward whichever face is currently at the bottom as the cube
+  // spins/tilts. Recomputed each frame from the cube's live orientation.
+  _gravLocal.set(0, -1, 0).applyQuaternion(_cubeQuatInv);
+
+  const tNow = performance.now() * 0.001;
+
+  for (const g of gummies) {
+    const px = g.center.x, py = g.center.y, pz = g.center.z;
+    const dst = mapField(px, py, pz, g);
+    fieldNormal(px, py, pz, g, _nrm);
+    const f = physics.repel * Math.exp(-dst * physics.repelFalloff + physics.repelBias);
+    g.vel.addScaledVector(_nrm, f);
+    const fr = THREE.MathUtils.clamp(1.5 * Math.abs(dst), 0, 1) * physics.frictionVar + physics.frictionBase;
+    g.vel.multiplyScalar(fr);
+
+    g.swim = g.swim || new THREE.Vector3(Math.random()*2-1, Math.random()*2-1, Math.random()*2-1).normalize();
+    const ph = g.driftPhase;
+    g.swim.x += Math.sin(tNow * 0.31 + ph) * 0.03;
+    g.swim.y += Math.sin(tNow * 0.27 + ph * 1.7) * 0.03;
+    g.swim.z += Math.cos(tNow * 0.23 + ph * 2.3) * 0.03;
+    // centering pull scaled by (1 - settle): when gravity is strong, blobs are
+    // allowed to leave centre and pile on the floor instead of swimming back.
+    const centerPull = 0.12 * (1 - physics.settle);
+    g.swim.x -= g.center.x * centerPull;
+    g.swim.y -= g.center.y * centerPull;
+    g.swim.z -= g.center.z * centerPull;
+    g.swim.normalize();
+    g.vel.addScaledVector(g.swim, physics.drift);
+    g.vel.x += (Math.random()-0.5) * physics.jitter;
+    g.vel.y += (Math.random()-0.5) * physics.jitter;
+    g.vel.z += (Math.random()-0.5) * physics.jitter;
+    // directional gravity toward the cube's current floor (local-down)
+    g.vel.addScaledVector(_gravLocal, physics.gravity);
+    g.vel.x += buoyDir.x * physics.tiltBias;
+    g.vel.y += buoyDir.y * physics.tiltBias;
+    g.vel.z += buoyDir.z * physics.tiltBias;
+    g.vel.clampScalar(-physics.velClamp, physics.velClamp);
+    g.velSm = g.velSm || new THREE.Vector3();
+    g.velSm.lerp(g.vel, physics.velSmooth);
+    g.center.addScaledVector(g.velSm, physics.timeScale);
+
+    // gummy surface comes right up to the glass so it can press and bulge it
+    const lim = HALF - g.radius * 0.9;
+    let hitWall = false, hitSpeed = 0;
+    if (g.center.x >  lim) { hitSpeed = Math.max(hitSpeed, Math.abs(g.vel.x)); g.center.x =  lim; g.vel.x = -Math.abs(g.vel.x) * 0.5; g.swim.x = -Math.abs(g.swim.x); hitWall = true; }
+    if (g.center.x < -lim) { hitSpeed = Math.max(hitSpeed, Math.abs(g.vel.x)); g.center.x = -lim; g.vel.x =  Math.abs(g.vel.x) * 0.5; g.swim.x =  Math.abs(g.swim.x); hitWall = true; }
+    if (g.center.y >  lim) { hitSpeed = Math.max(hitSpeed, Math.abs(g.vel.y)); g.center.y =  lim; g.vel.y = -Math.abs(g.vel.y) * 0.5; g.swim.y = -Math.abs(g.swim.y); hitWall = true; }
+    if (g.center.y < -lim) { hitSpeed = Math.max(hitSpeed, Math.abs(g.vel.y)); g.center.y = -lim; g.vel.y =  Math.abs(g.vel.y) * 0.5; g.swim.y =  Math.abs(g.swim.y); hitWall = true; }
+    if (g.center.z >  lim) { hitSpeed = Math.max(hitSpeed, Math.abs(g.vel.z)); g.center.z =  lim; g.vel.z = -Math.abs(g.vel.z) * 0.5; g.swim.z = -Math.abs(g.swim.z); hitWall = true; }
+    if (g.center.z < -lim) { hitSpeed = Math.max(hitSpeed, Math.abs(g.vel.z)); g.center.z = -lim; g.vel.z =  Math.abs(g.vel.z) * 0.5; g.swim.z =  Math.abs(g.swim.z); hitWall = true; }
+    // fire a tone only on the transition into the wall (not while resting on it)
+    if (hitWall && !g.wallTouch) {
+      const strength = THREE.MathUtils.clamp(hitSpeed / physics.velClamp, 0.15, 1);
+      audio.ping(strength * 0.8, g.toneSeed);
+    }
+    g.wallTouch = hitWall;
+  }
+
+  // --- gummy↔gummy collision tones: fire when two blobs newly touch ---
+  for (let a = 0; a < gummies.length; a++) {
+    for (let b = a + 1; b < gummies.length; b++) {
+      const ga = gummies[a], gb = gummies[b];
+      const dx = ga.center.x - gb.center.x;
+      const dy = ga.center.y - gb.center.y;
+      const dz = ga.center.z - gb.center.z;
+      const d = Math.hypot(dx, dy, dz);
+      const surfGap = d - (ga.radius + gb.radius);   // <0 means overlapping
+      const key = a * 16 + b;
+      const touching = surfGap < 0.02;
+      if (touching && !gummyPairTouch.has(key)) {
+        // approach speed → strength
+        const rvx = ga.velSm.x - gb.velSm.x, rvy = ga.velSm.y - gb.velSm.y, rvz = ga.velSm.z - gb.velSm.z;
+        const speed = Math.hypot(rvx, rvy, rvz);
+        const strength = THREE.MathUtils.clamp(speed / physics.velClamp, 0.12, 1);
+        audio.ping(strength, (ga.toneSeed + gb.toneSeed) * 0.5 % 1);
+        gummyPairTouch.add(key);
+      } else if (!touching && gummyPairTouch.has(key)) {
+        gummyPairTouch.delete(key);   // separated → allow it to ring again
+      }
+    }
+  }
+
+  const rv = new THREE.Vector3();
+  const contacts = [];
+  for (const g of gummies) {
+    const { N, cur, prev, rest, radius } = g;
+    const cx = g.center.x, cy = g.center.y, cz = g.center.z;
+    contacts.length = 0;
+    const margin = physics.contactMargin;
+    const lim = INNER;
+    const cWpx = lim - (cx + radius), cWnx = lim - (radius - cx);
+    const cWpy = lim - (cy + radius), cWny = lim - (radius - cy);
+    const cWpz = lim - (cz + radius), cWnz = lim - (radius - cz);
+    if (cWpx < margin) contacts.push([ 1,0,0, margin - cWpx]);
+    if (cWnx < margin) contacts.push([-1,0,0, margin - cWnx]);
+    if (cWpy < margin) contacts.push([0, 1,0, margin - cWpy]);
+    if (cWny < margin) contacts.push([0,-1,0, margin - cWny]);
+    if (cWpz < margin) contacts.push([0,0, 1, margin - cWpz]);
+    if (cWnz < margin) contacts.push([0,0,-1, margin - cWnz]);
+    for (const o of gummies) {
+      if (o === g) continue;
+      const dx = o.center.x - cx, dy = o.center.y - cy, dz = o.center.z - cz;
+      const dd = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1e-6;
+      const gap = dd - radius - o.radius;
+      if (gap < margin) { const inv = 1 / dd; contacts.push([dx*inv, dy*inv, dz*inv, margin - gap]); }
+    }
+    let maxDepth = 0; for (const c of contacts) maxDepth = Math.max(maxDepth, c[3]);
+    const softRaw = THREE.MathUtils.clamp(maxDepth / (margin + radius * 0.5), 0, 1);
+    g.softSm = (g.softSm === undefined) ? softRaw : g.softSm + (softRaw - g.softSm) * physics.stateSmooth;
+
+    for (let i = 0; i < N; i++) {
+      const ix = i*3, iy = ix+1, iz = ix+2;
+      rv.set(rest[ix], rest[iy], rest[iz]);
+      const r = rv.length() || 1e-6;
+      const ux = rv.x / r, uy = rv.y / r, uz = rv.z / r;
+      let dx = rv.x, dy = rv.y, dz = rv.z, bulge = 0;
+      for (const c of contacts) {
+        const facing = ux*c[0] + uy*c[1] + uz*c[2];
+        const depth = c[3] * physics.squash;
+        if (facing > 0) {
+          const w = facing * facing;
+          const dent = w * depth;
+          // (1) flatten against the surface: push the facing cap inward
+          dx -= c[0] * dent * r; dy -= c[1] * dent * r; dz -= c[2] * dent * r;
+
+          // (2) BAGGINESS: the squished cap spreads sideways across the wall.
+          const tnx = ux - c[0] * facing;
+          const tny = uy - c[1] * facing;
+          const tnz = uz - c[2] * facing;
+          const tl = Math.hypot(tnx, tny, tnz) || 1e-6;
+          const rim = facing * (1 - facing) * 4;     // peaks mid-cap → saggy edge
+          const spread = depth * physics.baggy * rim;
+          dx += (tnx / tl) * spread * r;
+          dy += (tny / tl) * spread * r;
+          dz += (tnz / tl) * spread * r;
+        }
+        bulge += depth * 0.5;
+      }
+      if (bulge > 0) { const b = Math.min(bulge, 0.5) * 0.35; dx += ux * b * r; dy += uy * b * r; dz += uz * b * r; }
+      const vx = (cur[ix] - prev[ix]) * physics.skinDamp;
+      const vy = (cur[iy] - prev[iy]) * physics.skinDamp;
+      const vz = (cur[iz] - prev[iz]) * physics.skinDamp;
+      prev[ix] = cur[ix]; prev[iy] = cur[iy]; prev[iz] = cur[iz];
+      cur[ix] += vx + (dx - cur[ix]) * physics.skinFollow;
+      cur[iy] += vy + (dy - cur[iy]) * physics.skinFollow;
+      cur[iz] += vz + (dz - cur[iz]) * physics.skinFollow;
+
+
+      // ═══════════════════════════════════════════════════════════════════
+      //  ambient occlusion for this vertex
+      // ═══════════════════════════════════════════════════════════════════ 
+
+      // occlusion grows as the vertex approaches a wall or another gummy's
+      // surface, weighted by how directly the vertex faces it. AO radius
+      // controls how far away the darkening starts.
+
+      const aoR = radius * aoParams.radius;          // falloff distance
+      const wx = cx + cur[ix], wy = cy + cur[iy], wz = cz + cur[iz]; // cube-local vert pos
+      let occ = 0;
+      // walls (axis-aligned interior box at ±INNER)
+      const wallGap = (lim2, comp, nrm) => {
+        const clr = lim2 - comp;                     // distance to wall (>=0 inside)
+        if (clr < aoR) {
+          const f = ux*nrm[0] + uy*nrm[1] + uz*nrm[2]; // does vertex face this wall?
+          if (f > 0) occ += (1 - clr / aoR) * f;
+        }
+      };
+      wallGap(INNER,  wx, [ 1,0,0]); wallGap(INNER, -wx, [-1,0,0]);
+      wallGap(INNER,  wy, [0, 1,0]); wallGap(INNER, -wy, [0,-1,0]);
+      wallGap(INNER,  wz, [0,0, 1]); wallGap(INNER, -wz, [0,0,-1]);
+      // other gummies
+      for (const o of gummies) {
+        if (o === g) continue;
+        const ox = o.center.x - wx, oy = o.center.y - wy, oz = o.center.z - wz;
+        const od = Math.sqrt(ox*ox + oy*oy + oz*oz) || 1e-6;
+        const surf = od - o.radius;                  // vertex distance to neighbor surface
+        if (surf < aoR) {
+          const inv = 1 / od;
+          const f = ux*ox*inv + uy*oy*inv + uz*oz*inv; // facing the neighbor?
+          if (f > 0) occ += (1 - Math.max(surf,0) / aoR) * f * 1.3;
+        }
+      }
+      const aoTarget = 1 - Math.min(occ, 1) * aoParams.darkness;
+      // temporal smoothing so AO doesn't flicker as the skin wobbles
+      g.ao[i] += (aoTarget - g.ao[i]) * 0.25;
+    }
+    // push AO to the geometry attribute
+    const aoArr = g.aoAttr.array;
+    for (let i = 0; i < N; i++) aoArr[i] = g.ao[i];
+    g.aoAttr.needsUpdate = true;
+
+    const pos = g.pos;
+    for (let i = 0; i < N; i++) pos.setXYZ(i, cur[i*3], cur[i*3+1], cur[i*3+2]);
+    pos.needsUpdate = true;
+    g.geo.computeVertexNormals();
+    // orient blob with the cube's full rotation so it sits in the tilted glass
+    g.mesh.quaternion.copy(cube.quaternion);
+    g.mesh.position.copy(localToWorld(g.center, _world));
+    if (g.core.visible) {
+      const cpos = g.corePos;
+      for (let i = 0; i < N; i++) cpos.setXYZ(i, cur[i*3], cur[i*3+1], cur[i*3+2]);
+      cpos.needsUpdate = true;
+      g.coreGeo.computeVertexNormals();
+      g.core.quaternion.copy(cube.quaternion);
+      g.core.position.copy(g.mesh.position);
+    }
+  }
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  raw (un-eased) bulge height at a lateral position (la,lb) 
+//  on the wall whose normal axis is `ax` (0=x,1=y,2=z) and 
+//  sign `sgn` (±1). Shared by the wall deform and the decal deform 
+//  so the pattern rides the exact same swell.
+// ═══════════════════════════════════════════════════════════════════ 
+
+function bulgeRawAt(ax, sgn, la, lb) {
+  const reach = cubeWallParams.reach;
+  let sum = 0, peak = 0;
+  for (const g of gummies) {
+    const gc = ax === 0 ? g.center.x : ax === 1 ? g.center.y : g.center.z;
+    const surf = sgn > 0 ? gc + g.radius : -(gc - g.radius);
+    const press = surf - (HALF - g.radius * reach);
+    if (press <= 0) continue;
+    const ga = ax === 0 ? g.center.y : g.center.x;
+    const gb = ax === 2 ? g.center.y : g.center.z;
+    const dist = Math.hypot(la - ga, lb - gb);
+    const R = g.radius * 1.9;
+    const t = Math.min(dist / R, 1);
+    const s = 1 - t * t * t * (t * (t * 6 - 15) + 10);
+    const pressN = Math.min(press / (g.radius * reach), 1);
+    const contrib = pressN * s;
+    sum += contrib;
+    if (contrib > peak) peak = contrib;
+  }
+  return Math.min(peak + (sum - peak) * 0.35, 1.3) * cubeWallParams.bulge;
+}
+
+// drive the decal pattern vertices outward by the local bulge so the dots/text
+// ride the swelling glass instead of staying flat in front of it.
+const decalBulge = new WeakMap();   // per-decal smoothed bulge array
+function deformDecals() {
+  const ease = cubeWallParams.ease;
+  for (const d of decals) {
+    const { mesh, axis, sgn, rest, pos, inset } = d;
+    let sm = decalBulge.get(d);
+    if (!sm) { sm = new Float32Array(pos.count); decalBulge.set(d, sm); }
+    // decals read the OUTER wall bulge; interior decals (negative inset, e.g.
+    // the back logo) sit on a different wall — use their own axis/sgn.
+    for (let i = 0; i < pos.count; i++) {
+      const rx = rest[i*3], ry = rest[i*3+1], rz = rest[i*3+2];
+      const la = axis === 0 ? ry : rx;
+      const lb = axis === 2 ? ry : rz;
+      // track the wall bulge exactly (same amount, same direction) so the
+      // decal stays coplanar with the glass surface and refracts as one piece.
+      const target = bulgeRawAt(axis, sgn, la, lb);
+      sm[i] += (target - sm[i]) * ease;
+      const b = sm[i];
+      // push along the face normal (axis*sgn), same direction the wall swells
+      let nx = 0, ny = 0, nz = 0;
+      if (axis === 0) nx = sgn; else if (axis === 1) ny = sgn; else nz = sgn;
+      pos.setXYZ(i, rx + nx * b, ry + ny * b, rz + nz * b);
+    }
+    pos.needsUpdate = true;
+  }
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  cube wall bulge: push the glass outward where a gummy presses
+// ═══════════════════════════════════════════════════════════════════ 
+
+// For each wall vertex, find the strongest nearby gummy pressing THAT wall and
+// raise the vertex outward, localized around the gummy's lateral position on the
+// wall (a soft gaussian bump). Eases back to flat when nothing presses.
+
+function deformCubeWalls() {
+  const reach = cubeWallParams.reach;     // how early (in radii) the bulge starts
+  const maxB  = cubeWallParams.bulge;     // peak outward push
+  const ease  = cubeWallParams.ease;      // return/approach smoothing
+  for (let i = 0; i < cubeN; i++) {
+    const dx = cubeDir[i*3], dy = cubeDir[i*3+1], dz = cubeDir[i*3+2];
+    // which wall axis/sign this vertex belongs to
+    const ax = dx !== 0 ? 0 : (dy !== 0 ? 1 : 2);
+    const sgn = dx + dy + dz;             // +1 or -1 (only one is nonzero)
+    if (sgn === 0) { // edge/corner vertex with no dominant face — leave flat
+      cubeBulge[i] += (0 - cubeBulge[i]) * ease;
+    } else {
+      const rx = cubeRest[i*3], ry = cubeRest[i*3+1], rz = cubeRest[i*3+2];
+      // lateral (in-wall) coords of this vertex
+      const la = ax === 0 ? ry : rx;       // first tangent
+      const lb = ax === 2 ? ry : rz;       // second tangent
+      let sum = 0, peak = 0;
+      for (const g of gummies) {
+        const gc = ax === 0 ? g.center.x : ax === 1 ? g.center.y : g.center.z;
+        // gummy surface position along the wall normal; press if it nears HALF
+        const surf = sgn > 0 ? gc + g.radius : -(gc - g.radius);
+        const press = surf - (HALF - g.radius * reach);   // >0 as it approaches
+        if (press <= 0) continue;
+        // lateral falloff: bump centred under the gummy
+        const ga = ax === 0 ? g.center.y : g.center.x;
+        const gb = ax === 2 ? g.center.y : g.center.z;
+        const dist = Math.hypot(la - ga, lb - gb);
+        const R = g.radius * 1.9;                 // dome radius on the wall
+        const t = Math.min(dist / R, 1);
+        const s = 1 - t * t * t * (t * (t * 6 - 15) + 10);  // smootherstep dome
+        const pressN = Math.min(press / (g.radius * reach), 1);
+        const contrib = pressN * s;
+        sum += contrib;                           // accumulate for merged blobs
+        if (contrib > peak) peak = contrib;
+      }
+      // blend max + a little accumulation so clustered gummies form one organic
+      // swell rather than separate hard bumps, but a lone press stays clean.
+      const amt = Math.min(peak + (sum - peak) * 0.35, 1.3);
+      cubeBulge[i] += (amt * maxB - cubeBulge[i]) * ease;
+    }
+    const b = cubeBulge[i];
+    cubePos.setXYZ(i,
+      cubeRest[i*3]   + dx * b,
+      cubeRest[i*3+1] + dy * b,
+      cubeRest[i*3+2] + dz * b
+    );
+  }
+  cubePos.needsUpdate = true;
+  geo.computeVertexNormals();
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  tweakpane gummy/physics control(s)
+// ═══════════════════════════════════════════════════════════════════ 
+
+const pane = new Pane({ title: 'Gummies / Scene', expanded:/Mobi|Android|iPhone|iPad|iPod|Touch/i.test(navigator.userAgent) ? false : true });
+const fGum = pane.addFolder({ title: 'Gummies (SDF physics)', expanded:/Mobi|Android|iPhone|iPad|iPod|Touch/i.test(navigator.userAgent) ? false : true });
+fGum.addBinding(lookState, 'current', {
+  label: 'look',
+  options: Object.fromEntries(Object.keys(LOOKS).map(k => [k, k])),
+}).on('change', e => applyLookAll(e.value));
+fGum.addBinding(physics, 'timeScale', { label: 'speed', min: 0.1, max: 1.5, step: 0.05 });
+fGum.addBinding(physics, 'repel', { label: 'repulsion', min: 0, max: 0.006, step: 0.0001 });
+fGum.addBinding(physics, 'velSmooth', { label: 'glide (vel smooth)', min: 0.05, max: 0.5, step: 0.01 });
+fGum.addBinding(physics, 'contactMargin', { label: 'contact margin', min: 0, max: 0.12, step: 0.005 });
+fGum.addBinding(physics, 'squash', { label: 'dent depth', min: 0, max: 3, step: 0.05 });
+fGum.addBinding(physics, 'baggy', { label: 'bagginess', min: 0, max: 1.5, step: 0.05 });
+fGum.addBinding(physics, 'skinFollow', { label: 'skin follow', min: 0.06, max: 0.4, step: 0.01 });
+fGum.addBinding(physics, 'skinDamp', { label: 'skin damp', min: 0.7, max: 0.95, step: 0.01 });
+fGum.addBinding(physics, 'gravity', { label: 'gravity', min: 0, max: 0.003, step: 0.00005 });
+fGum.addBinding(physics, 'settle', { label: 'settle (pile↔float)', min: 0, max: 1, step: 0.01 });
+fGum.addBinding(physics, 'drift', { label: 'swim', min: 0, max: 0.0015, step: 0.00002 });
+fGum.addBinding(physics, 'jitter', { label: 'jitter', min: 0, max: 0.002, step: 0.00005 });
+fGum.addBinding(aoParams, 'strength', { label: 'AO strength', min: 0, max: 1, step: 0.01 })
+  .on('change', e => { aoStrengthU.value = e.value; });
+fGum.addBinding(aoParams, 'radius', { label: 'AO radius', min: 0.5, max: 4, step: 0.05 });
+fGum.addBinding(aoParams, 'darkness', { label: 'AO darkness', min: 0, max: 1, step: 0.01 });
+fGum.addBinding(cubeWallParams, 'bulge', { label: 'wall bulge', min: 0, max: 0.6, step: 0.01 });
+fGum.addBinding(cubeWallParams, 'reach', { label: 'bulge reach', min: 0.2, max: 2, step: 0.05 });
+fGum.addBinding(cubeWallParams, 'ease',  { label: 'bulge ease', min: 0.04, max: 0.5, step: 0.01 });
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  cube spin state
+//  base corner-balance tilt (a vertex points down), 
+//  then independent Y/Z spin
+// ═══════════════════════════════════════════════════════════════════
+
+const BASE_TILT_X = Math.atan(1 / Math.SQRT2);
+const spinState = {
+  enabled: true,
+  speedY: 0.15,   // spin around vertical axis
+  speedZ: 0.10,   // tumble around Z so gravity sweeps across more faces
+  angleY: Math.PI / 4,
+  angleZ: 0,
+};
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  defensive binding helper (skips non-finite props that break TP)
+// ═══════════════════════════════════════════════════════════════════ 
+
+function bindNum(folder, obj, key, opts) {
+  if (typeof obj[key] === 'number' && isFinite(obj[key])) {
+    try { return folder.addBinding(obj, key, opts); }
+    catch (err) { console.warn('skip binding', key, err); }
+  } else {
+    console.warn('skip binding (not finite number):', key, obj[key]);
+  }
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  add glass (physical material) control(s)
+// ═══════════════════════════════════════════════════════════════════ 
+
+const fGlass = pane.addFolder({ title: 'Glass (physical)', expanded: false });
+bindNum(fGlass, glass, 'transmission', { min: 0, max: 1, step: 0.01 });
+bindNum(fGlass, glass, 'thickness', { min: 0, max: 5, step: 0.01 });
+bindNum(fGlass, glass, 'roughness', { min: 0, max: 1, step: 0.01 });
+bindNum(fGlass, glass, 'metalness', { min: 0, max: 1, step: 0.01 });
+bindNum(fGlass, glass, 'ior', { min: 1, max: 2.333, step: 0.01 });
+bindNum(fGlass, glass, 'attenuationDistance', { min: 0.05, max: 8, step: 0.05 });
+bindNum(fGlass, glass, 'clearcoat', { min: 0, max: 1, step: 0.01 });
+bindNum(fGlass, glass, 'clearcoatRoughness', { min: 0, max: 1, step: 0.01 });
+bindNum(fGlass, glass, 'sheen', { min: 0, max: 1, step: 0.01 });
+bindNum(fGlass, glass, 'sheenRoughness', { min: 0, max: 1, step: 0.01 });
+const glassColors = {
+  base: '#' + glass.color.getHexString(),
+  attenuation: '#' + glass.attenuationColor.getHexString(),
+  sheen: '#' + glass.sheenColor.getHexString(),
+};
+fGlass.addBinding(glassColors, 'base', { view: 'color' })
+  .on('change', e => glass.color.set(e.value));
+fGlass.addBinding(glassColors, 'attenuation', { view: 'color' })
+  .on('change', e => glass.attenuationColor.set(e.value));
+fGlass.addBinding(glassColors, 'sheen', { view: 'color' })
+  .on('change', e => glass.sheenColor.set(e.value));
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  surface flakes (micro-facet normal map)
+// ═══════════════════════════════════════════════════════════════════ 
+
+const flakesState = {
+  scale: glass.normalScale.x,          // sparkle strength
+  repeat: flakesNormal.repeat.x,       // flake density
+  enabled: true,
+};
+fGlass.addBinding(flakesState, 'enabled', { label: 'flakes' })
+  .on('change', e => { glass.normalMap = e.value ? flakesNormal : null; glass.needsUpdate = true; });
+fGlass.addBinding(flakesState, 'scale', { label: 'flake strength', min: 0, max: 0.3, step: 0.005 })
+  .on('change', e => glass.normalScale.setScalar(e.value));
+fGlass.addBinding(flakesState, 'repeat', { label: 'flake density', min: 1, max: 100, step: 1 })
+  .on('change', e => { flakesNormal.repeat.setScalar(e.value); });
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  environment (the lighting the glass reflects)
+// ═══════════════════════════════════════════════════════════════════ 
+
+const envState = { map: 'Room (studio)', intensity: scene.environmentIntensity };
+fGlass.addBinding(envState, 'map', {
+  label: 'env light',
+  options: Object.fromEntries(Object.keys(envOptions).map(k => [k, k])),
+}).on('change', e => { scene.environment = envOptions[e.value]; });
+fGlass.addBinding(envState, 'intensity', { label: 'env intensity', min: 0, max: 3, step: 0.05 })
+  .on('change', e => { scene.environmentIntensity = e.value; });
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  add ground reflection control(s)
+// ═══════════════════════════════════════════════════════════════════ 
+
+const fRefl = pane.addFolder({ title: 'Ground reflection', expanded: false });
+fRefl.addBinding(reflStrengthU, 'value', { label: 'strength', min: 0, max: 1, step: 0.01 });
+fRefl.addBinding(reflSpreadU,   'value', { label: 'spread',   min: 0.1, max: 1.0, step: 0.01 });
+fRefl.addBinding(reflDistortU,  'value', { label: 'ripple',   min: 0, max: 0.02, step: 0.0005 });
+fRefl.addBinding(reflBlurU,     'value', { label: 'blur',     min: 0, max: 4, step: 0.05 });
+fRefl.addBinding(reflOpacityU,  'value', { label: 'opacity',  min: 0, max: 1, step: 0.01 });
+const reflTint = { color: '#' + reflTintU.value.getHexString() };
+fRefl.addBinding(reflTint, 'color', { view: 'color', label: 'floor tint' })
+  .on('change', e => reflTintU.value.set(e.value));
+
+
+/*
+const fSpin = pane.addFolder({ title: 'Cube motion', expanded: true });
+fSpin.addBinding(spinState, 'enabled', { label: 'auto-spin' });
+fSpin.addBinding(spinState, 'speedY', { label: 'spin Y', min: 0, max: 1.0, step: 0.01 });
+fSpin.addBinding(spinState, 'speedZ', { label: 'tumble Z', min: 0, max: 1.0, step: 0.01 });
+*/
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  add sound control(s)
+// ═══════════════════════════════════════════════════════════════════ 
+
+const fSound = pane.addFolder({ title: 'Sound', expanded: false });
+fSound.addBinding(audio.opts, 'enabled', { label: 'collision sound' });
+fSound.addBinding(audio.opts, 'volume', { label: 'volume', min: 0, max: 1, step: 0.01 });
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  camera & controls
+// ═══════════════════════════════════════════════════════════════════ 
+
+const camera = new THREE.PerspectiveCamera(32, window.innerWidth/window.innerHeight, 0.1, 100);
+camera.position.set(6.4, 3.2, 11.2);
+
+const controls = new OrbitControls(camera, canvas);
+controls.target.set(0, 0.05, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.minDistance = 3.5;
+controls.maxDistance = 24;
+controls.maxPolarAngle = Math.PI * 0.56;
+controls.update();
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  resize
+// ═══════════════════════════════════════════════════════════════════ 
+
+addEventListener('resize', () => {
+  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  render-loop
+// ═══════════════════════════════════════════════════════════════════  
+
+let t = 0;
+let lastTime = performance.now();
+let firstFrame = true;
+
+renderer.setAnimationLoop(() => {
+
+  const now = performance.now();
+  const dt = Math.min((now - lastTime) / 1000, 0.05);
+  lastTime = now;
+  t += 0.003;
+
+  // ═════════════════════════════════════════════════════════════════════════════════════
+  //  constant rotation: corner-balance tilt + accumulating Y & Z spin
+  // ═════════════════════════════════════════════════════════════════════════════════════
+
+  if (spinState.enabled) {
+    spinState.angleY += spinState.speedY * dt;
+    spinState.angleZ += spinState.speedZ * dt;
+  }
+
+  cube.rotation.set(BASE_TILT_X, spinState.angleY, spinState.angleZ);
+  cube.updateMatrixWorld();
+
+  // ═════════════════════════════════════════════════════════════════════════════════════
+  //  keep decals locked to the cube while staying top-level for transmission
+  // ═════════════════════════════════════════════════════════════════════════════════════
+
+  decalRig.position.copy(cube.position);
+  decalRig.quaternion.copy(cube.quaternion);
+  decalRig.scale.copy(cube.scale);
+  
+  stepGummies();
+  deformCubeWalls();
+  deformDecals();
+
+  audio.tick(dt);
+
+  waveDecal.draw(now * 0.001, audio);   // animate + react to sound
+  gaugeDecal.draw(now * 0.001, audio);  // animate + react to sound
+  
+  controls.update();
+  renderer.render(scene, camera);
+  
+  if(firstFrame){ firstFrame=false; document.getElementById('loader').classList.add('hidden'); }
+});
+
+</script>
+</body>
+</html>
