@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ember Flow.</title>
+<link rel="stylesheet" href="styles/style.css"/>
+</head>
+<body>
+<div id="pane-container"></div>
+<div id="vignette"></div>
+<div id="title-block">
+  <span id="title-eyebrow">Tinker Day #40</span>
+  <span id="title-headline">Ember flow.</span>
+  <p style="font-size: 14px;">
+    Mousedown and move to interact.<br /> 
+    Tons of values to tweak in the pane.<br />
+  </p>
+</div>
+<footer><a id="nav-prev" href="https://dasprinzip.com/tinker/day39/">&larr; The Day Before.</a></footer>
+<div id="loader"><div class="spinner"></div><div class="loading-text">loading<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></div></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.185.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.185.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.185.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.0/examples/jsm/",
+    "tweakpane": "https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import {
+  Fn, If, uniform, instancedArray, instanceIndex, uint, int, float,
+  vec2, vec3, vec4, color, hash, mix, pow, exp, sin, cos, atan, PI,
+  normalize, cross, length, max, min, clamp, floor, mod, positionGeometry,
+  cameraViewMatrix, cameraProjectionMatrix, mx_noise_vec3, pass
+} from 'three/tsl';
+import { bloom } from 'three/addons/tsl/display/BloomNode.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { Pane } from 'tweakpane';
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  constant(s)
+// ═══════════════════════════════════════════════════════════════════
+
+const STRANDS = 3000;          // number of ribbon strands
+const TRAIL   = 96;            // history points per strand (ring buffer)
+const SEGS    = TRAIL - 1;     // segments per strand
+const COUNT   = STRANDS * TRAIL;
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  tweakable param(s)
+// ═══════════════════════════════════════════════════════════════════
+
+const prm = {
+  speed:     1.35,   // toroidal circulation
+  swirl:     0.85,   // poloidal roll around the tube
+  confine:   1.50,   // pull toward torus tube surface
+  curlAmt:   1.70,   // large-scale curl (bends the whole loop)
+  curlFreq:  0.38,
+  curl2Amt:  0.55,   // fine braid curl
+  curl2Freq: 1.60,
+  evolve:    0.15,   // noise field evolution speed
+  simSpeed:  1.0,
+  // look
+  width:     0.0105, // ribbon half-width (world units)
+  taper:     0.35,   // width falloff exponent along trail
+  fade:      1.60,   // brightness falloff exponent along trail
+  bright:    0.34,   // per-strand emissive scale (additive)
+  headBoost: 1.8,    // extra heat at the leading tip
+  colorHot:  '#ffd9a8',
+  colorMid:  '#ff8a2a',
+  colorDim:  '#61160a',
+  rotSpeed:  0.07,   // slow global spin (rad/s)
+  // post
+  bloomStrength: 1.05,
+  bloomRadius:   0.55,
+  bloomThreshold: 0.0,
+  exposure:  1.0,
+};
+
+const R_MAJOR = 1.55;
+const R_TUBE  = 0.55;
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  setup renderer
+// ═══════════════════════════════════════════════════════════════════
+
+if (!navigator.gpu) document.getElementById('ver').textContent = 'WebGPU not available in this browser';
+
+const renderer = new THREE.WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = prm.exposure;
+document.body.appendChild(renderer.domElement);
+await renderer.init(); // must precede pipeline / compute setup
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x030202);
+
+const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.1, 60);
+camera.position.set(0, 0.55, 5.3);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.target.set(0, 0, 0);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  uniform(s) needed
+// ═══════════════════════════════════════════════════════════════════
+
+const uHead      = uniform(0, 'uint');           // ring-buffer write slot
+const uDt        = uniform(1 / 60);
+const uTime      = uniform(0);                   // accumulated sim time
+const uAngle     = uniform(0);                   // accumulated global spin
+const uSpeed     = uniform(prm.speed);
+const uSwirl     = uniform(prm.swirl);
+const uConfine   = uniform(prm.confine);
+const uCurlAmt   = uniform(prm.curlAmt);
+const uCurlFreq  = uniform(prm.curlFreq);
+const uCurl2Amt  = uniform(prm.curl2Amt);
+const uCurl2Freq = uniform(prm.curl2Freq);
+const uEvolve    = uniform(prm.evolve);
+const uWidth     = uniform(prm.width);
+const uTaper     = uniform(prm.taper);
+const uFade      = uniform(prm.fade);
+const uBright    = uniform(prm.bright);
+const uHeadBoost = uniform(prm.headBoost);
+const uColHot    = uniform(new THREE.Color(prm.colorHot));
+const uColMid    = uniform(new THREE.Color(prm.colorMid));
+const uColDim    = uniform(new THREE.Color(prm.colorDim));
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  buffer(s) needed
+// ═══════════════════════════════════════════════════════════════════
+
+const posBuf = instancedArray(COUNT, 'vec3');
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  compute: init
+//  seed every history slot of a strand at one random 
+//  point inside the torus tube
+// ═══════════════════════════════════════════════════════════════════
+
+const computeInit = Fn(() => {
+  const i = instanceIndex;
+  const s = i.div(uint(TRAIL));
+  const th = hash(s.add(uint(17))).mul(PI.mul(2));
+  const ph = hash(s.add(uint(911))).mul(PI.mul(2));
+  const rr = hash(s.add(uint(4243))).sqrt().mul(R_TUBE);
+  const ring = float(R_MAJOR).add(rr.mul(cos(ph)));
+  const p = vec3(ring.mul(cos(th)), rr.mul(sin(ph)), ring.mul(sin(th)));
+  posBuf.element(i).assign(p);
+})().compute(COUNT);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  compute: step
+//  curl of a vec3 noise potential, central differences
+// ═══════════════════════════════════════════════════════════════════
+
+const curlAt = /*#__PURE__*/ Fn(([p, t, freq]) => {
+  const e = float(0.12);
+  const q = p.mul(freq);
+  const off = vec3(t, t.mul(0.7), t.mul(-0.5));
+  const P = (v) => mx_noise_vec3(v.add(off));
+  const px1 = P(q.add(vec3(e, 0, 0))), px0 = P(q.sub(vec3(e, 0, 0)));
+  const py1 = P(q.add(vec3(0, e, 0))), py0 = P(q.sub(vec3(0, e, 0)));
+  const pz1 = P(q.add(vec3(0, 0, e))), pz0 = P(q.sub(vec3(0, 0, e)));
+  const inv = float(1).div(e.mul(2));
+  return vec3(
+    py1.z.sub(py0.z).sub(pz1.y.sub(pz0.y)),
+    pz1.x.sub(pz0.x).sub(px1.z.sub(px0.z)),
+    px1.y.sub(px0.y).sub(py1.x.sub(py0.x))
+  ).mul(inv);
+});
+
+const computeStep = Fn(() => {
+  const s = instanceIndex; // one thread per strand
+  const prevSlot = uHead.add(uint(TRAIL - 1)).mod(uint(TRAIL));
+  const p = posBuf.element(s.mul(uint(TRAIL)).add(prevSlot)).toVar();
+
+  const theta = atan(p.z, p.x);
+  const ring = vec3(cos(theta).mul(R_MAJOR), 0, sin(theta).mul(R_MAJOR));
+  const T = vec3(sin(theta).negate(), 0, cos(theta));
+  const d = p.sub(ring);
+  const dl = length(d).add(1e-5);
+  const radial = d.div(dl);
+  const pol = normalize(cross(T, radial).add(vec3(0, 1e-6, 0)));
+  const confine = radial.mul(float(R_TUBE).sub(dl)).mul(uConfine);
+
+  const tEvo = uTime.mul(uEvolve);
+  const c1 = curlAt(p, tEvo, uCurlFreq);
+  const c2 = curlAt(p.add(31.7), tEvo.mul(1.7), uCurl2Freq);
+
+  const vel = T.mul(uSpeed)
+    .add(pol.mul(uSwirl))
+    .add(confine)
+    .add(c1.mul(uCurlAmt))
+    .add(c2.mul(uCurl2Amt));
+
+  posBuf.element(s.mul(uint(TRAIL)).add(uHead)).assign(p.add(vel.mul(uDt)));
+})().compute(STRANDS);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  ribbon(s)
+// ═══════════════════════════════════════════════════════════════════
+
+const base = new THREE.PlaneGeometry(1, 1); // x,y in [-0.5, 0.5]
+const geo = new THREE.InstancedBufferGeometry();
+geo.index = base.index;
+geo.setAttribute('position', base.getAttribute('position'));
+geo.setAttribute('uv', base.getAttribute('uv'));
+geo.instanceCount = STRANDS * SEGS;
+
+const mat = new THREE.MeshBasicNodeMaterial();
+mat.transparent = true;
+mat.blending = THREE.AdditiveBlending;
+mat.depthWrite = false;
+mat.depthTest = false;
+mat.side = THREE.DoubleSide;
+
+const strandOf = instanceIndex.div(uint(SEGS));
+const segOf = instanceIndex.mod(uint(SEGS));
+
+const slotAt = (age) => uHead.add(uint(TRAIL * 2)).sub(age).mod(uint(TRAIL)); // newest = age 0
+
+const buildVertex = Fn(() => {
+  const s = strandOf;
+  const j = segOf;
+  const i0 = s.mul(uint(TRAIL)).add(slotAt(j));
+  const i1 = s.mul(uint(TRAIL)).add(slotAt(j.add(uint(1))));
+  const p0 = posBuf.element(i0);
+  const p1 = posBuf.element(i1);
+
+  // slow global spin around Y
+  const ca = cos(uAngle), sa = sin(uAngle);
+  const rot = (p) => vec3(p.x.mul(ca).add(p.z.mul(sa)), p.y, p.z.mul(ca).sub(p.x.mul(sa)));
+
+  const v0 = cameraViewMatrix.mul(vec4(rot(p0), 1)).xyz;
+  const v1 = cameraViewMatrix.mul(vec4(rot(p1), 1)).xyz;
+
+  const u = positionGeometry.x.add(0.5);        // along segment 0..1
+  const w = positionGeometry.y;                 // across -0.5..0.5
+
+  const dirv = v1.sub(v0);
+  const dl = length(dirv.xy);
+  const side = vec3(dirv.y.negate(), dirv.x, 0).div(max(dl, 1e-6)); // screen-perp
+
+  const age01 = float(j).add(u).div(float(TRAIL));
+  const taper = pow(float(1).sub(age01), uTaper);
+
+  const mid = mix(v0, v1, u);
+  const pView = mid.add(side.mul(w).mul(uWidth.mul(2)).mul(taper));
+  return cameraProjectionMatrix.mul(vec4(pView, 1));
+});
+
+mat.vertexNode = buildVertex();
+
+const buildColor = Fn(() => {
+  const s = strandOf;
+  const j = segOf;
+  const u = positionGeometry.x.add(0.5);
+  const age01 = float(j).add(u).div(float(TRAIL));
+
+  const fade = pow(clamp(float(1).sub(age01), 0, 1), uFade);
+  const head = exp(age01.mul(-14)).mul(uHeadBoost); // hot tip
+
+  const hue = hash(s.add(uint(733)));               // per-strand temperature
+  const mid = mix(uColDim, uColMid, hue.mul(0.75).add(0.25));
+  const col = mix(mid, uColHot, head.mul(0.5));
+
+  const soft = float(1).sub(positionGeometry.y.abs().mul(2)); // soft edge across width
+  return vec4(col.mul(fade.add(head)).mul(uBright).mul(soft), 1);
+});
+
+mat.colorNode = buildColor();
+
+const ribbons = new THREE.Mesh(geo, mat);
+ribbons.frustumCulled = false;
+scene.add(ribbons);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  postpro
+// ═══════════════════════════════════════════════════════════════════
+
+const pipeline = new THREE.RenderPipeline(renderer);
+const scenePass = pass(scene, camera);
+const sceneColor = scenePass.getTextureNode();
+const bloomPass = bloom(sceneColor, prm.bloomStrength, prm.bloomRadius, prm.bloomThreshold);
+pipeline.outputNode = sceneColor.add(bloomPass);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  init & warm-up
+// ═══════════════════════════════════════════════════════════════════
+
+await renderer.computeAsync(computeInit);
+for (let i = 0; i < TRAIL; i++) {
+  uHead.value = i % TRAIL;
+  uDt.value = 1 / 60;
+  uTime.value += 1 / 60;
+  await renderer.computeAsync(computeStep);
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  setup: tweakpane
+// ═══════════════════════════════════════════════════════════════════
+
+const pane = new Pane({ title: 'Controls', expanded: false });
+const fFlow = pane.addFolder({ title: 'flow' });
+fFlow.addBinding(prm, 'speed', { min: 0, max: 3 }).on('change', e => uSpeed.value = e.value);
+fFlow.addBinding(prm, 'swirl', { min: 0, max: 3 }).on('change', e => uSwirl.value = e.value);
+fFlow.addBinding(prm, 'confine', { min: 0, max: 6 }).on('change', e => uConfine.value = e.value);
+fFlow.addBinding(prm, 'curlAmt', { min: 0, max: 4 }).on('change', e => uCurlAmt.value = e.value);
+fFlow.addBinding(prm, 'curlFreq', { min: 0.05, max: 2 }).on('change', e => uCurlFreq.value = e.value);
+fFlow.addBinding(prm, 'curl2Amt', { min: 0, max: 2 }).on('change', e => uCurl2Amt.value = e.value);
+fFlow.addBinding(prm, 'curl2Freq', { min: 0.2, max: 5 }).on('change', e => uCurl2Freq.value = e.value);
+fFlow.addBinding(prm, 'evolve', { min: 0, max: 1 }).on('change', e => uEvolve.value = e.value);
+fFlow.addBinding(prm, 'simSpeed', { min: 0, max: 2 });
+const fLook = pane.addFolder({ title: 'look' });
+fLook.addBinding(prm, 'width', { min: 0.002, max: 0.05 }).on('change', e => uWidth.value = e.value);
+fLook.addBinding(prm, 'taper', { min: 0, max: 2 }).on('change', e => uTaper.value = e.value);
+fLook.addBinding(prm, 'fade', { min: 0.2, max: 4 }).on('change', e => uFade.value = e.value);
+fLook.addBinding(prm, 'bright', { min: 0.02, max: 1.5 }).on('change', e => uBright.value = e.value);
+fLook.addBinding(prm, 'headBoost', { min: 0, max: 5 }).on('change', e => uHeadBoost.value = e.value);
+// Native color picker blades — avoids the full-width popup bug
+const addColorBlade = (folder, label, key, uni) => {
+  const blade = folder.addBlade({
+    view: 'text',
+    label,
+    parse: v => v,
+    stringify: v => v,
+    value: prm[key],
+  });
+  // Swap the text input for a native <input type="color">
+  requestAnimationFrame(() => {
+    const textInput = blade.element.querySelector('input[type="text"]');
+    if (textInput) {
+      const colorInput = document.createElement('input');
+      colorInput.type = 'color';
+      colorInput.value = prm[key];
+      colorInput.style.cssText = 'width:100%;height:24px;border:none;background:none;cursor:pointer;padding:0;';
+      colorInput.addEventListener('input', e => {
+        prm[key] = e.target.value;
+        uni.value.set(e.target.value);
+      });
+      textInput.replaceWith(colorInput);
+    }
+  });
+};
+addColorBlade(fLook, 'colorHot', 'colorHot', uColHot);
+addColorBlade(fLook, 'colorMid', 'colorMid', uColMid);
+addColorBlade(fLook, 'colorDim', 'colorDim', uColDim);
+fLook.addBinding(prm, 'rotSpeed', { min: -0.5, max: 0.5 });
+const fPost = pane.addFolder({ title: 'post' });
+fPost.addBinding(prm, 'bloomStrength', { min: 0, max: 3 }).on('change', e => bloomPass.strength.value = e.value);
+fPost.addBinding(prm, 'bloomRadius', { min: 0, max: 1.5 }).on('change', e => bloomPass.radius.value = e.value);
+fPost.addBinding(prm, 'bloomThreshold', { min: 0, max: 1 }).on('change', e => bloomPass.threshold.value = e.value);
+fPost.addBinding(prm, 'exposure', { min: 0.2, max: 2.5 }).on('change', e => renderer.toneMappingExposure = e.value);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  resize
+// ═══════════════════════════════════════════════════════════════════ 
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  render-loop
+// ═══════════════════════════════════════════════════════════════════ 
+
+let frame = TRAIL; // warmup consumed frames [0, TRAIL)
+const timer = new THREE.Timer();
+let firstFrame = true;
+
+renderer.setAnimationLoop(() => {
+  timer.update();
+  const dt = Math.min(timer.getDelta(), 1 / 30) * prm.simSpeed;
+  uDt.value = dt;
+  uTime.value += dt;
+  uAngle.value += prm.rotSpeed * dt;
+  uHead.value = frame % TRAIL;
+  frame++;
+
+  renderer.compute(computeStep);
+  controls.update();
+  pipeline.render();
+
+  if(firstFrame){ firstFrame=false; document.getElementById('loader').classList.add('hidden'); }
+});
+</script>
+</body>
+</html>
