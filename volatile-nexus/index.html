@@ -1,0 +1,2056 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Volatile Nexus.</title>
+<link rel="stylesheet" href="styles/style.css"/>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.178.0/three.webgpu.min.js",
+    "three/webgpu": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.178.0/three.webgpu.min.js",
+    "three/tsl": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.178.0/three.tsl.min.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="pane-container"></div>
+<div id="vignette"></div>
+<div id="title-block">
+  <span id="title-eyebrow">Tinker Day #42</span>
+  <span id="title-headline">Volatile Nexus.</span>
+  <p style="font-size: 14px;">
+    Move mouse over glass ring to make<br>it wobble. Hover the cubes 
+    to part it.<br>Mousedown & move rotates the scene.<br><br>
+    Sound starts playing with your first<br>interaction.<br />
+  </p>
+</div>
+<footer><a id="nav-prev-all" href="https://dasprinzip.com/tinker/index.html">&#8593; Checkout all days</a><a id="nav-prev" href="https://dasprinzip.com/tinker/day41/"><br>&larr; The Day Before.</a></footer>
+<div id="loader"><div class="spinner"></div><div class="loading-text">loading<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></div></div>
+<div id="tag"></div>
+<script>
+  const __fail = (msg) => {
+    const l = document.getElementById('loader');
+    if (!l) return;
+    l.classList.remove('hidden');
+    const sp = l.querySelector('.spinner'); if (sp) sp.style.display = 'none';
+    const t = l.querySelector('.loading-text');
+    if (t) t.textContent = 'error — ' + msg;
+  };
+  window.addEventListener('error', e => __fail(e.message || 'script error'));
+  window.addEventListener('unhandledrejection', e =>
+    __fail(e.reason && e.reason.message ? e.reason.message : String(e.reason)));
+</script>
+<script type="module">
+import * as THREE from 'three';
+import {
+  screenUV, uniform, vec2, vec3, vec4, color, mix, smoothstep,
+  length, abs, pow, oneMinus, dot, cos, sin, time, normalView,
+  positionViewDirection, refract, div, Fn, float, uv,
+  reflector, positionWorld, mx_noise_float,
+  mx_worley_noise_float, texture, uniformArray, Loop, int, exp,
+  normalize, positionGeometry, positionLocal, normalLocal,
+  transformNormalToView
+} from 'three/tsl';
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  setup renderer
+// ═══════════════════════════════════════════════════════════════════
+
+const renderer = new THREE.WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 0.60;
+
+renderer.setClearColor(0x000000, 0);
+
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.transmitted = true;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(38, innerWidth / innerHeight, 0.1, 60);
+camera.position.set(0, 0.35, 5.0);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  background (pure TSL)
+// ═══════════════════════════════════════════════════════════════════
+
+const aspect = uniform(innerWidth / innerHeight);
+const p = screenUV.sub(vec2(0.5, 0.5)).mul(vec2(aspect, 1.0));
+const d = length(p);
+const bgBase = mix(color(0x76909f), color(0x3d5566), smoothstep(0.02, 0.85, d));
+const pool  = smoothstep(0.62, 0.0, length(p.mul(vec2(0.75, 1.45)).sub(vec2(0.0, -0.16)))).mul(0.12);
+const upper = smoothstep(0.5, 0.0, length(p.sub(vec2(0.06, 0.16)))).mul(0.10);
+const halo  = smoothstep(0.14, 0.0, abs(d.sub(0.47))).mul(0.035);
+scene.backgroundNode = vec4(bgBase.add(pool).add(upper).add(halo), 1.0);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  procedural environment
+// ═══════════════════════════════════════════════════════════════════
+
+const envColorA = new THREE.Color(0x2b6bff); // deep blue
+const envColorB = new THREE.Color(0xff3c8a); // magenta
+const envColorC = new THREE.Color(0x18e0d8); // cyan
+const envState = { sat: 1.0, bright: 1.0, bands: 5.0,
+                   causticAmt: 2.99, causticScale: 13.73, causticChroma: 0.02,
+                   causticIntensity: 6.09, causticOcclusion: 14.13,
+                   causticColor: new THREE.Color(0xeaf6ff) };
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  CPU worley noise
+// ═══════════════════════════════════════════════════════════════════
+
+function hash2(i, j) {
+  let n = Math.sin(i * 127.1 + j * 311.7) * 43758.5453;
+  const a = n - Math.floor(n);
+  n = Math.sin(i * 269.5 + j * 183.3) * 43758.5453;
+  const b = n - Math.floor(n);
+  return [a, b];
+}
+function worley(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  let best = 1e9;
+  for (let dj = -1; dj <= 1; dj++) {
+    for (let di = -1; di <= 1; di++) {
+      const ci = xi + di, cj = yi + dj;
+      const [ox, oy] = hash2(ci, cj);
+      const px = ci + ox, py = cj + oy;
+      const d = (px - x) * (px - x) + (py - y) * (py - y);
+      if (d < best) best = d;
+    }
+  }
+  return Math.sqrt(best);
+}
+
+function causticCell(x, y) {
+  const w = 1.0 - Math.min(1.0, worley(x, y));
+  return w * w * w;
+}
+
+function buildEnvTexture() {
+  const W = 512, H = 256;
+  const data = new Float32Array(W * H * 4);
+  const blob = (u, v, cu, cv, su, sv) => {
+    let du = Math.abs(u - cu); du = Math.min(du, 1 - du);
+    const dv = v - cv;
+    return Math.exp(-((du * du) / (su * su) + (dv * dv) / (sv * sv)));
+  };
+  for (let y = 0; y < H; y++) {
+    const v = y / (H - 1);
+    for (let x = 0; x < W; x++) {
+      const u = x / (W - 1);
+
+      // base: cool vertical gradient
+      let r = 0.06 + 0.22 * v, g = 0.09 + 0.28 * v, b = 0.14 + 0.38 * v;
+
+      // big soft key light overhead — gives the bright core the glass needs
+      const key = 6.0 * blob(u, v, 0.50, 0.90, 0.18, 0.11);
+      r += key; g += key * 1.02; b += key * 1.06;
+
+      // SATURATED COLOUR BANDS — the actual source of the colour in the ring.
+      // Angular bands around the sphere, so refraction sweeps through them
+      // and dispersion splits each band edge into a spectrum.
+      const phase = u * Math.PI * 2.0 * envState.bands;
+      const w1 = Math.pow(Math.max(0, Math.sin(phase)), 3.0);
+      const w2 = Math.pow(Math.max(0, Math.sin(phase + 2.1)), 3.0);
+      const w3 = Math.pow(Math.max(0, Math.sin(phase + 4.2)), 3.0);
+      // concentrate the bands around the horizon, where the ring looks
+      const beltMask = Math.exp(-Math.pow((v - 0.52) / 0.30, 2.0));
+      const bandAmp = 2.6 * beltMask * envState.sat;
+      r += (envColorA.r * w1 + envColorB.r * w2 + envColorC.r * w3) * bandAmp;
+      g += (envColorA.g * w1 + envColorB.g * w2 + envColorC.g * w3) * bandAmp;
+      b += (envColorA.b * w1 + envColorB.b * w2 + envColorC.b * w3) * bandAmp;
+
+      // CAUSTIC LAYER — same pattern and same parameters as the floor
+      // projection (scale, chroma, intensity, occlusion, colour), baked
+      // into the environment so the ring refracts it with nothing on
+      // the ground. Changing the caustics folder re-bakes this.
+      const cs = envState.causticScale;
+      const ch = envState.causticChroma;
+      const cx = u * cs * 2.0, cy = v * cs;
+      let cr = causticCell(cx - ch * cs, cy);
+      let cg = causticCell(cx, cy - ch * cs);
+      let cb = causticCell(cx + ch * cs, cy + ch * cs);
+      // occlusion sharpens the cells the way the shadow-pass term does
+      const occP = Math.max(0.05, envState.causticOcclusion) * 0.16;
+      cr = Math.pow(cr, occP); cg = Math.pow(cg, occP); cb = Math.pow(cb, occP);
+      // intensity scaling mirrors the castShadowNode multiplier
+      const cAmp = envState.causticAmt * beltMask *
+                   (envState.causticIntensity / 22.0) * 3.2;
+      const cc = envState.causticColor;
+      r += cr * cAmp * cc.r; g += cg * cAmp * cc.g; b += cb * cAmp * cc.b;
+
+      // two bright vertical strips — the long streak reflections
+      const s1 = 1.5 * blob(u, v, 0.16, 0.55, 0.030, 0.28);
+      const s2 = 1.2 * blob(u, v, 0.80, 0.50, 0.028, 0.30);
+      r += s1 + s2; g += (s1 + s2) * 1.02; b += (s1 + s2) * 1.08;
+
+      // cool floor bounce
+      const fb = 0.45 * blob(u, v, 0.5, 0.05, 0.5, 0.10);
+      r += fb * 0.55; g += fb * 0.65; b += fb * 0.85;
+
+      const i = (y * W + x) * 4;
+      data[i]     = r * envState.bright;
+      data[i + 1] = g * envState.bright;
+      data[i + 2] = b * envState.bright;
+      data[i + 3] = 1;
+    }
+  }
+  const tex = new THREE.DataTexture(data, W, H, THREE.RGBAFormat, THREE.FloatType);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+let pmrem = null;
+let envSeq = 0;
+let rendererReady = false;
+
+async function refreshEnv() {
+  const raw = buildEnvTexture();
+  const seq = ++envSeq;
+
+  if (!rendererReady) {
+    const old = scene.environment;
+    scene.environment = raw;
+    if (old && old !== raw) old.dispose();
+    return;
+  }
+
+  try {
+    if (!pmrem) pmrem = new THREE.PMREMGenerator(renderer);
+    const result = await pmrem.fromEquirectangularAsync(raw);
+
+    if (seq !== envSeq) {
+      result.texture.dispose();
+      raw.dispose();
+      return;
+    }
+    const old = scene.environment;
+    scene.environment = result.texture;
+    raw.dispose();
+    if (old && old !== result.texture) old.dispose();
+  } catch (err) {
+    console.warn('PMREM unavailable, using raw environment:', err);
+    if (seq !== envSeq) { raw.dispose(); return; }
+    const old = scene.environment;
+    scene.environment = raw;
+    if (old && old !== raw) old.dispose();
+  }
+}
+
+refreshEnv().catch(e => console.warn("env bake failed:", e));
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  ring geometry
+// ═══════════════════════════════════════════════════════════════════
+
+function roundedRingGeometry(rIn, rOut, halfH, cr, cornerSeg = 14, latheSeg = 200) {
+  const pts = [];
+  const arc = (cx, cy, a0, a1) => {
+    for (let i = 0; i <= cornerSeg; i++) {
+      const a = a0 + (a1 - a0) * (i / cornerSeg);
+      pts.push(new THREE.Vector2(cx + Math.cos(a) * cr, cy + Math.sin(a) * cr));
+    }
+  };
+  pts.push(new THREE.Vector2(rIn + cr, -halfH));
+  pts.push(new THREE.Vector2(rOut - cr, -halfH));
+  arc(rOut - cr, -halfH + cr, -Math.PI / 2, 0);
+  pts.push(new THREE.Vector2(rOut, halfH - cr));
+  arc(rOut - cr, halfH - cr, 0, Math.PI / 2);
+  pts.push(new THREE.Vector2(rIn + cr, halfH));
+  arc(rIn + cr, halfH - cr, Math.PI / 2, Math.PI);
+  pts.push(new THREE.Vector2(rIn, -halfH + cr));
+  arc(rIn + cr, -halfH + cr, Math.PI, Math.PI * 1.5);
+  pts.push(pts[0].clone());
+  const geo = new THREE.LatheGeometry(pts, latheSeg);
+  geo.computeVertexNormals();
+  return geo;
+}
+const ringGeo = roundedRingGeometry(0.56, 1.0, 0.44, 0.17);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  glass material
+// ═══════════════════════════════════════════════════════════════════
+
+const glass = new THREE.MeshPhysicalNodeMaterial({
+  color: 0xffffff,
+  transmission: 1.0,
+  thickness: 1.5,
+  roughness: 0.035,
+  metalness: 0.0,
+  ior: 1.5,
+  dispersion: 14.0,
+  iridescence: 0.35,
+  iridescenceIOR: 1.3,
+  iridescenceThicknessRange: [120, 480],
+  clearcoat: 0.0,
+  clearcoatRoughness: 0.05,
+  specularIntensity: 1.0,
+  envMapIntensity: 2.1,
+  attenuationColor: new THREE.Color(0xdff2ff),
+  attenuationDistance: 4.0
+});
+glass.transparent = true; 
+
+const uFresnelStrength = uniform(0.87);
+const uFresnelPower = uniform(4.25);
+const uRainbowSpeed = uniform(0.04);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  refracted cube buffer
+// ═══════════════════════════════════════════════════════════════════
+
+const cubeRT = new THREE.RenderTarget(
+  Math.floor(innerWidth * 0.5), Math.floor(innerHeight * 0.5)
+);
+const uCubeIor = uniform(1.5);          // kept in sync with the glass IOR
+const uCubeRefrAmt = uniform(2.0);      // brightness of the refracted cubes
+const uCubeRefrShift = uniform(0.22);   // thickness-like refraction shift
+const uCubeRefrChroma = uniform(0.32);  // per-channel IOR spread — strong CA
+const uCubeSpectral = uniform(0.25);    // iridescent tinting of the refraction
+const uCubeRefrBlur = uniform(0.15);    // frosted-glass blur of the refraction
+const uCubeRefrSat = uniform(1.4);      // saturation boost of the refraction
+const uCubeFlip = uniform(0);           // 1 if the backend flips RT Y
+
+{
+  const facing = abs(dot(normalView, positionViewDirection));
+  const fres = pow(oneMinus(facing), uFresnelPower);
+  const t = normalView.x.mul(1.4).add(normalView.y.mul(0.9)).add(time.mul(uRainbowSpeed));
+  const rainbow = cos(t.mul(6.2831).add(vec3(0.0, 2.094, 4.188))).mul(0.5).add(0.5);
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  refracted swarm: sample cube buffer along the refracted eye ray
+  // ═══════════════════════════════════════════════════════════════════
+
+  const jx = mx_noise_float(vec3(screenUV.mul(140.0), time.mul(0.5)));
+  const jy = mx_noise_float(vec3(screenUV.yx.mul(140.0).add(7.3), time.mul(0.5)));
+  const blurJit = vec2(jx, jy).mul(uCubeRefrBlur.mul(0.06));
+  const sampleAt = (dIor) => {
+    const rr = refract(
+      positionViewDirection.negate(), normalView, div(1.0, uCubeIor.add(dIor))
+    );
+    const s = screenUV.add(rr.xy.mul(uCubeRefrShift)).add(blurJit);
+    return texture(cubeRT.texture,
+      vec2(s.x, mix(s.y, oneMinus(s.y), uCubeFlip)));
+  };
+  const cR = sampleAt(uCubeRefrChroma.negate()).r;
+  const cG = sampleAt(float(0.0)).g;
+  const cB = sampleAt(uCubeRefrChroma).b;
+
+  const rawCol = vec3(cR, cG, cB);
+  const luma = dot(rawCol, vec3(0.299, 0.587, 0.114));
+  const satCol = mix(vec3(luma), rawCol, uCubeRefrSat).clamp(0.0, 8.0);
+
+  const spectralTint = mix(vec3(1.0), rainbow.mul(1.6), uCubeSpectral);
+  const swarmGlow = satCol.mul(spectralTint).mul(uCubeRefrAmt)
+    .mul(pow(facing, float(1.2)));
+
+  glass.emissiveNode = rainbow.mul(fres).mul(uFresnelStrength).add(swarmGlow);
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  mouse ripple on the glass
+// ═══════════════════════════════════════════════════════════════════
+
+const RIPPLE_MAX = 12;
+const ripPosArr = []; for (let i = 0; i < RIPPLE_MAX; i++) ripPosArr.push(new THREE.Vector3());
+const ripAgeArr = new Array(RIPPLE_MAX).fill(99);
+const ripStrArr = new Array(RIPPLE_MAX).fill(0);
+const uRipPos = uniformArray(ripPosArr);
+const uRipAge = uniformArray(ripAgeArr);
+const uRipStr = uniformArray(ripStrArr);
+const uRingWobble = uniform(0.05);
+
+const ringRippleFn = Fn(([p]) => {
+  const total = float(0).toVar();
+  Loop({ start: int(0), end: int(RIPPLE_MAX), type: 'int' }, ({ i }) => {
+    const age = uRipAge.element(i);
+    const str = uRipStr.element(i);
+    const ctr = uRipPos.element(i);
+    const dist = length(p.sub(ctr));
+    const shell = dist.sub(age.mul(1.4));
+    const ringW = exp(shell.mul(shell).mul(-6.0));
+    const osc = cos(dist.mul(9.0).sub(age.mul(11.0)));
+    const decay = exp(age.mul(-2.6));
+    total.addAssign(osc.mul(ringW).mul(decay).mul(str));
+  });
+  return total;
+});
+
+{
+
+  const pg = positionGeometry;
+  const cDir = normalize(pg.xz);
+  const tubeCtr = vec3(cDir.x.mul(0.78), 0.0, cDir.y.mul(0.78));
+  const rippleDir = normalize(pg.sub(tubeCtr));
+  const dispAt = (p) => ringRippleFn(p).mul(uRingWobble);
+  glass.positionNode = positionLocal.add(rippleDir.mul(dispAt(pg)));
+
+  const REPS = 0.04;
+  glass.normalNode = Fn(() => {
+    const dx = dispAt(pg.add(vec3(REPS, 0, 0))).sub(dispAt(pg.add(vec3(-REPS, 0, 0))));
+    const dy = dispAt(pg.add(vec3(0, REPS, 0))).sub(dispAt(pg.add(vec3(0, -REPS, 0))));
+    const dz = dispAt(pg.add(vec3(0, 0, REPS))).sub(dispAt(pg.add(vec3(0, 0, -REPS))));
+    const grad = vec3(dx, dy, dz).mul(float(1.0 / (2.0 * REPS)));
+    const n = normalize(normalLocal.sub(grad.mul(0.7)));
+    return transformNormalToView(n);
+  })();
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  caustics (castShadowNode)
+// ═══════════════════════════════════════════════════════════════════
+
+const uCausticOcclusion = uniform(14.13);
+const uCausticIntensity = uniform(6.09);
+const uCausticScale = uniform(5.97);
+const uCausticSpeed = uniform(0.06);
+const uChroma = uniform(0.02);
+const uCausticColor = uniform(new THREE.Color(0xeaf6ff));
+const uIorShadow = uniform(1.5);
+
+glass.castShadowNode = Fn(() => {
+  const refr = refract(
+    positionViewDirection.negate(), normalView, div(1.0, uIorShadow)
+  ).normalize();
+
+  const occ = pow(abs(normalView.z), uCausticOcclusion);
+
+  const baseUV = refr.xy.mul(uCausticScale);
+  const tt = time.mul(uCausticSpeed);
+
+  const cell = (o) =>
+    pow(oneMinus(mx_worley_noise_float(vec3(baseUV.add(o), tt))), float(3.0));
+
+  const caustic = vec3(
+    cell(vec2(uChroma.negate(), 0.0)),
+    cell(vec2(0.0, uChroma.negate())),
+    cell(vec2(uChroma, uChroma))
+  );
+
+  return caustic.mul(occ.mul(uCausticIntensity)).add(occ).mul(uCausticColor);
+})();
+
+const ring = new THREE.Mesh(ringGeo, glass);
+ring.castShadow = true;
+const rig = new THREE.Group();
+rig.add(ring);
+scene.add(rig);
+ring.rotation.set(1.22, 0.0, 0.0);
+rig.rotation.set(0.06, -0.55, -0.10);
+rig.position.y = -0.12;
+
+const ripRaycaster = new THREE.Raycaster();
+const ripNDC = new THREE.Vector2();
+const _ripLocal = new THREE.Vector3();
+let ripPrev = null, ripLastSpawn = 0, ripLastCast = 0;
+
+function spawnRipple(local, strength) {
+  let slot = 0, oldest = -1;
+  for (let i = 0; i < RIPPLE_MAX; i++) {
+    if (ripAgeArr[i] > oldest) { oldest = ripAgeArr[i]; slot = i; }
+  }
+  ripPosArr[slot].copy(local);
+  ripAgeArr[slot] = 0;
+  ripStrArr[slot] = strength;
+}
+
+function rippleJS(p) {
+  let total = 0;
+  for (let i = 0; i < RIPPLE_MAX; i++) {
+    const age = ripAgeArr[i];
+    if (age > 5) continue; 
+    const dx = p.x - ripPosArr[i].x;
+    const dy = p.y - ripPosArr[i].y;
+    const dz = p.z - ripPosArr[i].z;
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    const shell = dist - age * 1.4;
+    total += Math.cos(dist * 9.0 - age * 11.0) *
+             Math.exp(-6.0 * shell * shell) *
+             Math.exp(-2.6 * age) * ripStrArr[i];
+  }
+  return total;
+}
+const _flrLocal = new THREE.Vector3(), _flrDir = new THREE.Vector3(),
+      _flrInv = new THREE.Matrix4();
+
+renderer.domElement.addEventListener('pointermove', (e) => {
+  const now = performance.now();
+  if (now - ripLastCast < 25) return; // brute-force lathe raycast: throttle
+  ripLastCast = now;
+  ripNDC.set((e.clientX / innerWidth) * 2 - 1,
+             -(e.clientY / innerHeight) * 2 + 1);
+  ripRaycaster.setFromCamera(ripNDC, camera);
+  const hit = ripRaycaster.intersectObject(ring, false);
+  if (hit.length) {
+    _ripLocal.copy(hit[0].point);
+    ring.worldToLocal(_ripLocal);
+    if (now - ripLastSpawn > 30) {
+      let str = 1.0;
+      if (ripPrev) {
+        str = THREE.MathUtils.clamp(0.5 + _ripLocal.distanceTo(ripPrev) * 16, 0.4, 1.8);
+      }
+      spawnRipple(_ripLocal, str);
+      ripLastSpawn = now;
+      ripPrev = _ripLocal.clone();
+    }
+  } else {
+    ripPrev = null;
+  }
+});
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  golden cube swarm
+// ═══════════════════════════════════════════════════════════════════
+
+const CUBE_COUNT = 2000;
+
+// procedural brushed-gold texture — no external asset needed
+function goldTexture() {
+  const s = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = s;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#c9962f';
+  ctx.fillRect(0, 0, s, s);
+  // horizontal brushed streaks, light and dark
+  for (let i = 0; i < 280; i++) {
+    const y = Math.random() * s;
+    const w = 8 + Math.random() * 72;
+    const x = Math.random() * s - w / 2;
+    ctx.fillStyle = Math.random() > 0.5
+      ? `rgba(255,222,150,${0.05 + Math.random() * 0.16})`
+      : `rgba(115,70,12,${0.04 + Math.random() * 0.12})`;
+    ctx.fillRect(x, y, w, 1 + Math.random() * 1.6);
+  }
+  // fine speckle for a hammered-metal grain
+  for (let i = 0; i < 170; i++) {
+    ctx.fillStyle = Math.random() > 0.5
+      ? 'rgba(255,240,195,0.35)' : 'rgba(92,56,8,0.30)';
+    ctx.fillRect(Math.random() * s, Math.random() * s, 1.4, 1.4);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+
+const SwarmMat = THREE.MeshStandardNodeMaterial || THREE.MeshStandardMaterial;
+const cubeMat = new SwarmMat({
+  map: goldTexture(),
+  color: 0xffe9b0,
+  metalness: 1.0,
+  roughness: 0.28,
+  envMapIntensity: 1.6,
+  opacity: 1.0
+});
+
+const swarmHolder = new THREE.Group();
+swarmHolder.rotation.copy(ring.rotation);
+rig.add(swarmHolder);
+
+const swarm = new THREE.InstancedMesh(
+  new THREE.BoxGeometry(1, 1, 1), cubeMat, CUBE_COUNT
+);
+swarm.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+swarm.frustumCulled = false; // instances move every frame; skip stale bounds
+swarm.renderOrder = 6;       // after glass (0) and after the ghost pass (5)
+swarmHolder.add(swarm);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  x-ray pass: shows behind-glass cubes in true sync
+// ═══════════════════════════════════════════════════════════════════
+
+const ghostMat = new SwarmMat({
+  map: cubeMat.map,
+  color: 0xd99a35,
+  metalness: 1.0,
+  roughness: 0.5,
+  envMapIntensity: 0.9,
+  emissive: 0x8a5a12,
+  emissiveIntensity: 0.35,
+  transparent: true,
+  opacity: 0.85,
+  depthWrite: false,
+  depthTest: true
+});
+ghostMat.depthFunc = THREE.GreaterDepth;
+const swarmGhost = new THREE.InstancedMesh(
+  swarm.geometry, ghostMat, CUBE_COUNT
+);
+swarmGhost.instanceMatrix = swarm.instanceMatrix; // share the live buffer
+swarmGhost.frustumCulled = false;
+swarmGhost.renderOrder = 5; // after the glass, BEFORE the main swarm
+swarmHolder.add(swarmGhost);
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  cube-only mirror scene for the refraction buffer
+// ═══════════════════════════════════════════════════════════════════
+
+const rtScene = new THREE.Scene();
+const rtHolder = new THREE.Group();
+rtHolder.matrixAutoUpdate = false; // copied from swarmHolder every frame
+rtScene.add(rtHolder);
+
+const rtMat = new SwarmMat({
+  map: cubeMat.map,
+  color: 0xffe9b0,
+  metalness: 1.0,
+  roughness: 0.28,
+  envMapIntensity: 1.6
+});
+const rtSwarm = new THREE.InstancedMesh(swarm.geometry, rtMat, CUBE_COUNT);
+rtSwarm.instanceMatrix = swarm.instanceMatrix; // share the live buffer
+rtSwarm.frustumCulled = false;
+rtHolder.add(rtSwarm);
+
+const swarmPath = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(0.00, -2.10, 0.0),  // behind, lining up on the hole
+  new THREE.Vector3(0.00, -1.10, 0.0),
+  new THREE.Vector3(0.00,  0.00, 0.0),  // dead centre of the hole
+  new THREE.Vector3(0.00,  1.10, 0.0),
+  new THREE.Vector3(0.35,  1.90, 0.0),  // exit, banking to the side
+  new THREE.Vector3(1.35,  1.65, 0.0),
+  new THREE.Vector3(2.05,  0.85, 0.0),
+  new THREE.Vector3(2.30,  0.00, 0.0),  // widest point beside the ring
+  new THREE.Vector3(2.05, -0.85, 0.0),
+  new THREE.Vector3(1.35, -1.65, 0.0),
+  new THREE.Vector3(0.35, -1.90, 0.0)   // sweeping back behind the ring
+], true, 'catmullrom', 0.5);
+
+const PATH_SAMPLES = 2048;
+const pathPos = new Float32Array((PATH_SAMPLES + 1) * 3);
+const pathTan = new Float32Array((PATH_SAMPLES + 1) * 3);
+{
+  const p = new THREE.Vector3(), tg = new THREE.Vector3();
+  for (let i = 0; i <= PATH_SAMPLES; i++) {
+    const u = (i % PATH_SAMPLES) / PATH_SAMPLES; // wrap: last entry = first
+    swarmPath.getPointAt(u, p);
+    swarmPath.getTangentAt(u, tg);
+    pathPos[i * 3] = p.x; pathPos[i * 3 + 1] = p.y; pathPos[i * 3 + 2] = p.z;
+    pathTan[i * 3] = tg.x; pathTan[i * 3 + 1] = tg.y; pathTan[i * 3 + 2] = tg.z;
+  }
+}
+
+let holeU0 = 0, holeU1 = 0;
+{
+  let first = -1, last = -1;
+  for (let i = 0; i <= PATH_SAMPLES; i++) {
+    const j = i * 3;
+    const d = Math.hypot(pathPos[j], pathPos[j + 1], pathPos[j + 2]);
+    if (d < 0.75) { if (first < 0) first = i; last = i; }
+  }
+  holeU0 = first / PATH_SAMPLES;
+  holeU1 = last / PATH_SAMPLES;
+}
+
+function samplePath(u, outP, outT) {
+  const f = u * PATH_SAMPLES;
+  const i0 = Math.floor(f), a = f - i0;
+  const j0 = i0 * 3, j1 = (i0 + 1) * 3;
+  outP.set(
+    pathPos[j0] + (pathPos[j1] - pathPos[j0]) * a,
+    pathPos[j0 + 1] + (pathPos[j1 + 1] - pathPos[j0 + 1]) * a,
+    pathPos[j0 + 2] + (pathPos[j1 + 2] - pathPos[j0 + 2]) * a
+  );
+  outT.set(
+    pathTan[j0] + (pathTan[j1] - pathTan[j0]) * a,
+    pathTan[j0 + 1] + (pathTan[j1 + 1] - pathTan[j0 + 1]) * a,
+    pathTan[j0 + 2] + (pathTan[j1 + 2] - pathTan[j0 + 2]) * a
+  ).normalize();
+}
+
+const cubes = [];
+{
+  const rand = (a, b) => a + Math.random() * (b - a);
+  for (let i = 0; i < CUBE_COUNT; i++) {
+    // offsets in a unit disc across the path
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.sqrt(Math.random());
+    cubes.push({
+      phase: (i + rand(0, 0.8)) / CUBE_COUNT * 0.5, // half-loop stream
+      ox: Math.cos(a) * r,                   // across-path offset (in-plane)
+      oy: Math.sin(a) * r,                   // across-path offset (out-of-plane)
+      wobSpeed: rand(0.7, 1.8),
+      wobPhase: rand(0, Math.PI * 2),
+      axis: new THREE.Vector3(rand(-1, 1), rand(-1, 1), rand(-1, 1)).normalize(),
+      spin: rand(0.8, 2.6) * (Math.random() < 0.5 ? -1 : 1),
+      spin0: rand(0, Math.PI * 2),
+      size: rand(0.024, 0.050),
+      lap: -1, ang: 0, angPrev: 0,           // per-lap branch state
+      dx: 0, dy: 0, dz: 0,                   // spring displacement (mouse)
+      vx: 0, vy: 0, vz: 0                    // spring velocity
+    });
+  }
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  mouse proximity: cubes near the cursor's pick ray get pushed away
+// ═══════════════════════════════════════════════════════════════════
+
+const swarmState = { speed: 0.1, scatter: 0.21, size: 0.64,
+                     mouse: true, mouseRadius: 0.55, mouseForce: 45 };
+
+const lapAngles = [0]; // first lap: right-hand side
+function lapAngle(k) {
+  if (k < 0) return lapAngles[0];
+  while (lapAngles.length <= k) {
+    const prev = lapAngles[lapAngles.length - 1];
+    const opts = [0, Math.PI, Math.PI / 2] // no bottom branch
+      .filter(a => a !== prev); // never the same branch twice in a row
+    lapAngles.push(opts[(Math.random() * opts.length) | 0]);
+  }
+  return lapAngles[k];
+}
+const mouseNDC = new THREE.Vector2(10, 10);
+let mouseActive = false;
+renderer.domElement.addEventListener('pointermove', (e) => {
+  mouseNDC.set((e.clientX / innerWidth) * 2 - 1,
+               -(e.clientY / innerHeight) * 2 + 1);
+  mouseActive = true;
+});
+renderer.domElement.addEventListener('pointerleave', () => {
+  mouseActive = false;
+});
+
+const swarmRaycaster = new THREE.Raycaster();
+const _sp = new THREE.Vector3(), _st = new THREE.Vector3(),
+      _sn1 = new THREE.Vector3(), _sn2 = new THREE.Vector3(),
+      _sq = new THREE.Quaternion(), _ss = new THREE.Vector3(),
+      _sm = new THREE.Matrix4(), _sup = new THREE.Vector3(0, 0, 1),
+      _sinv = new THREE.Matrix4(),
+      _sro = new THREE.Vector3(), _srd = new THREE.Vector3();
+
+function updateSwarm(t, dt) {
+  const head = t * swarmState.speed;
+
+  // mouse pick ray in holder-local space, once per frame
+  let rayOK = false;
+  if (mouseActive && swarmState.mouse) {
+    swarmRaycaster.setFromCamera(mouseNDC, camera);
+    swarmHolder.updateMatrixWorld();
+    _sinv.copy(swarmHolder.matrixWorld).invert();
+    _sro.copy(swarmRaycaster.ray.origin).applyMatrix4(_sinv);
+    _srd.copy(swarmRaycaster.ray.direction).transformDirection(_sinv).normalize();
+    rayOK = true;
+  }
+  const R = swarmState.mouseRadius;
+  const kSpring = 26.0, kDamp = 7.5; // settle back in about half a second
+  let distAcc = 0; // summed repel displacement -> audio disturbance
+
+  for (let i = 0; i < CUBE_COUNT; i++) {
+    const c = cubes[i];
+    const g = head + c.phase;
+    const lap = Math.floor(g);
+    const u = g - lap;
+    if (c.lap !== lap) {
+      c.lap = lap;
+      c.ang = lapAngle(lap);
+      c.angPrev = lapAngle(lap - 1);
+    }
+    samplePath(u, _sp, _st);
+    // blend from last lap's branch just after the wrap — position there is
+    // on the rotation axis (x=0), so only the cross-path offsets swing,
+    // and easing them over the first stretch keeps that swing smooth
+    let ang = c.ang;
+    if (u < 0.08) {
+      let d = c.ang - c.angPrev;
+      d = ((d + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+      const w = u / 0.08;
+      ang = c.angPrev + d * (w * w * (3 - 2 * w));
+    }
+    // rotate path point + tangent around the hole axis (local Y)
+    const caB = Math.cos(ang), saB = Math.sin(ang);
+    let rxB = _sp.x * caB + _sp.z * saB;
+    _sp.z = -_sp.x * saB + _sp.z * caB; _sp.x = rxB;
+    rxB = _st.x * caB + _st.z * saB;
+    _st.z = -_st.x * saB + _st.z * caB; _st.x = rxB;
+    // cross-path basis: the curve lies in the XY plane, so its tangent is
+    // never parallel to +Z and this frame stays stable along the loop
+    _sn1.crossVectors(_st, _sup).normalize();
+    _sn2.crossVectors(_st, _sn1).normalize();
+    // the swarm pinches tight to thread the hole, relaxes out on the arc
+    const pinch = 0.45 + 0.55 * Math.min(1, _sp.length() / 1.1);
+    const ox = (c.ox + Math.sin(t * c.wobSpeed + c.wobPhase) * 0.16)
+               * swarmState.scatter * pinch;
+    const oy = (c.oy + Math.cos(t * c.wobSpeed * 0.8 + c.wobPhase) * 0.16)
+               * swarmState.scatter * pinch;
+    _sp.addScaledVector(_sn1, ox).addScaledVector(_sn2, oy);
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  mouse spring physics
+    // ═══════════════════════════════════════════════════════════════════
+
+    // spring pulls the displacement back to zero; damping stops jitter
+    let fx = -kSpring * c.dx - kDamp * c.vx;
+    let fy = -kSpring * c.dy - kDamp * c.vy;
+    let fz = -kSpring * c.dz - kDamp * c.vz;
+    if (rayOK) {
+      // closest point on the pick ray to this cube's current position
+      const cx = _sp.x + c.dx, cy = _sp.y + c.dy, cz = _sp.z + c.dz;
+      const px = cx - _sro.x, py = cy - _sro.y, pz = cz - _sro.z;
+      const tp = px * _srd.x + py * _srd.y + pz * _srd.z;
+      if (tp > 0) {
+        let rx = cx - (_sro.x + _srd.x * tp);
+        let ry = cy - (_sro.y + _srd.y * tp);
+        let rz = cz - (_sro.z + _srd.z * tp);
+        const d = Math.sqrt(rx * rx + ry * ry + rz * rz);
+        if (d < R) {
+          // degenerate: cube dead on the ray — pick a stable side to flee
+          if (d < 1e-4) { rx = c.ox || 0.3; ry = 0.2; rz = c.oy || 0.3; }
+          const inv = 1 / (d < 1e-4 ? Math.hypot(rx, ry, rz) : d);
+          const fall = 1 - d / R;               // 1 at the ray, 0 at the rim
+          const s = fall * fall * swarmState.mouseForce;
+          fx += rx * inv * s; fy += ry * inv * s; fz += rz * inv * s;
+        }
+      }
+    }
+    // semi-implicit euler; displacement capped so nothing can fly away
+    c.vx += fx * dt; c.vy += fy * dt; c.vz += fz * dt;
+    c.dx += c.vx * dt; c.dy += c.vy * dt; c.dz += c.vz * dt;
+    const dm = Math.sqrt(c.dx * c.dx + c.dy * c.dy + c.dz * c.dz);
+    if (dm > 1.2) {
+      const sc = 1.2 / dm;
+      c.dx *= sc; c.dy *= sc; c.dz *= sc;
+    }
+    distAcc += Math.min(dm, 1.2);
+    _sp.x += c.dx; _sp.y += c.dy; _sp.z += c.dz;
+    // ---------------------------------------------------------------
+
+    // self-rotation about each cube's own random axis
+    _sq.setFromAxisAngle(c.axis, c.spin0 + t * c.spin);
+    const sz = c.size * swarmState.size;
+    _ss.set(sz, sz, sz);
+    _sm.compose(_sp, _sq, _ss);
+    swarm.setMatrixAt(i, _sm);
+  }
+  swarmState.disturb = distAcc / CUBE_COUNT;
+  swarm.instanceMatrix.needsUpdate = true;
+}
+updateSwarm(0, 0.016); // valid matrices before the first frame / warm-up
+
+// ------------------------------------------------- ambient sound
+// Fully synthesized (no assets), wired to the same data the visuals use:
+//  - pad whose lowpass opens with the ripple field's live energy
+//  - water-plops fired by ripple impulses (pitch/level from stroke speed)
+//  - shimmer bed that swells with the fraction of the stream currently
+//    inside the ring's hole (head phase vs the path's hole window)
+//  - each lap's branch decision re-tunes the pad chord slightly
+// Browsers require a user gesture before audio: starts on first click.
+let actx = null, masterGain = null, padFilter = null, shimmerGain = null,
+    shimmerBP = null, noiseBuf = null,
+    glassGain = null, glassBP = null, audioReady = false, audioLap = -1;
+const padOscs = [];
+const PAD_ROOT = 110; // A2
+
+function ensureAudio() {
+  if (actx) { if (actx.state === 'suspended') actx.resume(); return; }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  actx = new AC();
+  masterGain = actx.createGain();
+  masterGain.gain.value = 0;
+  masterGain.connect(actx.destination);
+
+  // ---- pad: four soft partials through a slow-breathing lowpass
+  padFilter = actx.createBiquadFilter();
+  padFilter.type = 'lowpass';
+  padFilter.frequency.value = 520;
+  padFilter.Q.value = 0.7;
+  const padGain = actx.createGain();
+  padGain.gain.value = 0.16;
+  padFilter.connect(padGain);
+  padGain.connect(masterGain);
+  const ratios = [1, 1.5, 2.0, 2.52];
+  ratios.forEach((r, i) => {
+    const o = actx.createOscillator();
+    o.type = i < 2 ? 'sine' : 'triangle';
+    o.frequency.value = PAD_ROOT * r;
+    const g = actx.createGain();
+    g.gain.value = i < 2 ? 0.5 : 0.16;
+    o.connect(g); g.connect(padFilter); o.start();
+    padOscs.push({ o, r });
+    const lfo = actx.createOscillator();
+    lfo.frequency.value = 0.06 + i * 0.031;
+    const lg = actx.createGain();
+    lg.gain.value = 1.4 + i;
+    lfo.connect(lg); lg.connect(o.detune); lfo.start();
+  });
+
+  // ---- airy noise bed
+  noiseBuf = actx.createBuffer(1, actx.sampleRate * 2, actx.sampleRate);
+  const nd = noiseBuf.getChannelData(0);
+  for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+  const mkNoise = () => {
+    const src = actx.createBufferSource();
+    src.buffer = noiseBuf; src.loop = true; src.start();
+    return src;
+  };
+  const nbp = actx.createBiquadFilter();
+  nbp.type = 'bandpass'; nbp.frequency.value = 420; nbp.Q.value = 0.5;
+  const ng = actx.createGain(); ng.gain.value = 0.025;
+  mkNoise().connect(nbp); nbp.connect(ng); ng.connect(masterGain);
+
+  // ---- shimmer: beating triangles + bright noise, gated by hole coverage
+  shimmerGain = actx.createGain();
+  shimmerGain.gain.value = 0;
+  shimmerGain.connect(masterGain);
+  [660, 663, 990].forEach((fz) => {
+    const o = actx.createOscillator();
+    o.type = 'triangle'; o.frequency.value = fz;
+    const g = actx.createGain(); g.gain.value = 0.3;
+    o.connect(g); g.connect(shimmerGain); o.start();
+  });
+  shimmerBP = actx.createBiquadFilter();
+  shimmerBP.type = 'bandpass';
+  shimmerBP.frequency.value = 1500;
+  shimmerBP.Q.value = 1.1;
+  const sng = actx.createGain(); sng.gain.value = 0.45;
+  mkNoise().connect(shimmerBP); shimmerBP.connect(sng);
+  sng.connect(shimmerGain);
+
+  // ---- singing glass: the wobble sound. No discrete triggers — a
+  // high-Q resonant noise tone (the wine-glass-rim hum) whose LEVEL is
+  // driven every frame by the ripple field's energy: it swells while you
+  // stroke the glass and fades as the waves decay. Two resonances plus a
+  // slow vibrato keep it alive rather than sterile.
+  glassGain = actx.createGain();
+  glassGain.gain.value = 0;
+  glassGain.connect(masterGain);
+  glassBP = actx.createBiquadFilter();
+  glassBP.type = 'bandpass';
+  glassBP.frequency.value = 640;
+  glassBP.Q.value = 18;
+  const glassBP2 = actx.createBiquadFilter();
+  glassBP2.type = 'bandpass';
+  glassBP2.frequency.value = 963;
+  glassBP2.Q.value = 14;
+  const glassBP2g = actx.createGain();
+  glassBP2g.gain.value = 0.5;
+  mkNoise().connect(glassBP); glassBP.connect(glassGain);
+  mkNoise().connect(glassBP2); glassBP2.connect(glassBP2g);
+  glassBP2g.connect(glassGain);
+  const glassVib = actx.createOscillator();
+  glassVib.frequency.value = 0.8;
+  const glassVibG = actx.createGain();
+  glassVibG.gain.value = 6;
+  glassVib.connect(glassVibG); glassVibG.connect(glassBP.frequency);
+  glassVib.start();
+
+  audioReady = true;
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  cross-device audio unlock.
+// ═══════════════════════════════════════════════════════════════════
+
+for (const ev of ['pointerdown', 'pointermove', 'touchstart', 'touchend',
+                  'mousedown', 'click', 'wheel', 'keydown']) {
+  window.addEventListener(ev, ensureAudio, { passive: true });
+}
+
+
+function circOverlap(a0, len, b0, b1) {
+  let ov = 0;
+  for (const off of [0, 1, -1]) {
+    const s0 = a0 + off, e0 = s0 + len;
+    ov += Math.max(0, Math.min(e0, b1) - Math.max(s0, b0));
+  }
+  return ov;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  floor (receives caustics).
+// ═══════════════════════════════════════════════════════════════════
+
+const floorMat = new THREE.MeshStandardNodeMaterial({
+  color: 0x63808f,
+  roughness: 0.95,
+  metalness: 0.0
+});
+floorMat.transparent = true;
+// fade the disc into the painted backdrop so the horizon stays invisible
+floorMat.opacityNode = smoothstep(1.0, 0.35, length(uv().sub(0.5).mul(2.0)));
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  wet floor reflection.
+// ═══════════════════════════════════════════════════════════════════
+
+const uWetAmount = uniform(0.95);      // how mirrored the floor is
+const uWetBlur = uniform(0.15);        // softness of the reflection
+const uWetDistort = uniform(0.22);     // ripple/puddle distortion
+const uWetScale = uniform(2.2);        // ripple size
+const uWetSpeed = uniform(0.12);       // ripple movement
+const uWetFresnel = uniform(2.4);      // how strongly angle affects it
+const uWetTint = uniform(new THREE.Color(0xbcd6e6));
+const uWetRough = uniform(0.12);       // v37 value — strong mirror. Raise it if the ring dims.
+const MIRROR_Y = -1.141;
+const _mirDBS = new THREE.Vector2();
+renderer.getDrawingBufferSize(_mirDBS);
+const mirrorRT = new THREE.RenderTarget(
+  _mirDBS.x, _mirDBS.y, { type: THREE.HalfFloatType }
+);
+const mirrorCam = new THREE.PerspectiveCamera();
+const uMirrorTexMat = uniform(new THREE.Matrix4());
+const _mirTM = new THREE.Matrix4();
+const _mirPos = new THREE.Vector3(), _mirDir = new THREE.Vector3(),
+      _mirUp = new THREE.Vector3(), _mirTgt = new THREE.Vector3();
+
+function renderMirror() {
+  camera.updateMatrixWorld();
+  // reflect the camera across the floor plane (proper rotation — no
+  // negative scale, so winding and culling stay correct)
+  _mirPos.setFromMatrixPosition(camera.matrixWorld);
+  _mirPos.y = 2 * MIRROR_Y - _mirPos.y;
+  camera.getWorldDirection(_mirDir);
+  _mirDir.y *= -1;
+  _mirUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
+  _mirUp.y *= -1;
+  mirrorCam.position.copy(_mirPos);
+  mirrorCam.up.copy(_mirUp);
+  _mirTgt.copy(_mirPos).add(_mirDir);
+  mirrorCam.lookAt(_mirTgt);
+  mirrorCam.projectionMatrix.copy(camera.projectionMatrix);
+  mirrorCam.projectionMatrixInverse.copy(camera.projectionMatrixInverse);
+  mirrorCam.updateMatrixWorld(true);
+  mirrorCam.matrixWorldInverse.copy(mirrorCam.matrixWorld).invert();
+  // reflector texture matrix: world position -> mirror-view UV.
+  // NOTE the NEGATED Y row: WebGPU samples render-target textures with V
+  // pointing DOWN, so the classic WebGL bias (+0.5 Y) lands every lookup
+  // at the vertically mirrored spot — the reflection then appears
+  // displaced to the wrong region of the floor, seemingly "behind" the
+  // scene. Flipping V in the bias puts it exactly under the objects.
+  _mirTM.set(
+    0.5, 0, 0, 0.5,
+    0, -0.5, 0, 0.5,
+    0, 0, 0.5, 0.5,
+    0, 0, 0, 1
+  ).multiply(mirrorCam.projectionMatrix)
+   .multiply(mirrorCam.matrixWorldInverse);
+  uMirrorTexMat.value.copy(_mirTM);
+  // the floor must not sample itself while being drawn into the mirror
+  floor.visible = false;
+  renderer.setRenderTarget(mirrorRT);
+  renderer.render(scene, mirrorCam);
+  renderer.setRenderTarget(null);
+  floor.visible = true;
+}
+const wetOK = true;
+
+if (wetOK) {
+  // Distort the reflection lookup with drifting noise — this is what makes
+  // it read as a wet, uneven surface instead of polished glass.
+  const rippleUV = positionWorld.xz.mul(uWetScale);
+  const n1 = mx_noise_float(vec3(rippleUV, time.mul(uWetSpeed)));
+  const n2 = mx_noise_float(vec3(rippleUV.yx.mul(1.7), time.mul(uWetSpeed).add(11.0)));
+  // Blur: scatter the mirror lookup with high-frequency noise. Larger
+  // scatter reads as a softer reflection.
+  const jitter = mx_noise_float(
+    vec3(positionWorld.xz.mul(90.0), time.mul(0.5))
+  );
+  const jitter2 = mx_noise_float(
+    vec3(positionWorld.zx.mul(90.0).add(31.7), time.mul(0.5))
+  );
+  const mirClip = uMirrorTexMat.mul(vec4(positionWorld, 1.0));
+  const mirUV = mirClip.xy.div(mirClip.w)
+    .add(vec2(n1, n2).mul(uWetDistort.mul(0.06)))
+    .add(vec2(jitter, jitter2).mul(uWetBlur.mul(0.045)));
+  const rBase = texture(mirrorRT.texture, mirUV);
+
+  // fresnel: reflections strengthen at grazing angles, like real wet ground
+  const facing = abs(dot(normalView, positionViewDirection));
+  const fres = pow(oneMinus(facing), uWetFresnel);
+
+  // fade the mirror out toward the disc edge so it blends into the backdrop
+  const radial = smoothstep(1.0, 0.25, length(uv().sub(0.5).mul(2.0)));
+
+  // Add the reflection ON TOP of the floor colour rather than blending
+  // toward it.
+  floorMat.colorNode = mix(
+    color(0x63808f),
+    rBase.rgb.mul(uWetTint),
+    fres.mul(uWetAmount).mul(radial).clamp(0, 1)
+  );
+  // wet ground is smoother than dry
+  floorMat.roughnessNode = mix(float(0.95), uWetRough,
+    uWetAmount.mul(radial).clamp(0, 1));
+}
+
+const floor = new THREE.Mesh(new THREE.CircleGeometry(9, 64), floorMat);
+floor.rotation.x = -Math.PI / 2;
+floor.position.y = -1.14;
+floor.receiveShadow = true;
+scene.add(floor);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  light(s).
+// ═══════════════════════════════════════════════════════════════════
+
+const spot = new THREE.SpotLight(0xffffff, 182.61);
+spot.position.set(1.4, 4.2, 1.8);
+spot.angle = 0.10;
+spot.penumbra = 1.0;
+spot.decay = 2;
+spot.distance = 0;
+spot.castShadow = true;
+spot.shadow.mapType = THREE.HalfFloatType; // HDR caustics
+spot.shadow.mapSize.set(2048, 2048);
+spot.shadow.camera.near = 0.5;
+spot.shadow.camera.far = 15;
+spot.shadow.intensity = 0.98;
+spot.shadow.bias = -0.0002;
+spot.target.position.set(0, -1, 0);
+scene.add(spot, spot.target);
+
+const fill = new THREE.DirectionalLight(0xbcd6e6, 0.45);
+fill.position.set(-3, 1, 2);
+scene.add(fill);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  lens flare(s).
+// ═══════════════════════════════════════════════════════════════════
+
+const flareScene = new THREE.Scene();
+const flareCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+function radialTex(size, stops) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(size/2, size/2, 0, size/2, size/2, size/2);
+  for (const [p, col] of stops) g.addColorStop(p, col);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+const texGlow = radialTex(256, [
+  [0, 'rgba(255,255,255,1)'], [0.25, 'rgba(226,240,255,0.5)'],
+  [0.6, 'rgba(180,214,255,0.12)'], [1, 'rgba(150,190,255,0)']
+]);
+
+function hexTex(size, rgba, ring) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  const r = size * 0.42, cx = size / 2;
+  ctx.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2 + Math.PI / 6;
+    const x = cx + Math.cos(a) * r, y = cx + Math.sin(a) * r;
+    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+  }
+  ctx.closePath();
+  if (ring) { ctx.strokeStyle = rgba; ctx.lineWidth = size * 0.05; ctx.stroke(); }
+  else { ctx.fillStyle = rgba; ctx.fill(); }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+function streakTex(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  const g = ctx.createLinearGradient(0, 0, w, 0);
+  g.addColorStop(0, 'rgba(90,150,255,0)');
+  g.addColorStop(0.35, 'rgba(150,200,255,0.35)');
+  g.addColorStop(0.5, 'rgba(235,248,255,0.95)');
+  g.addColorStop(0.65, 'rgba(150,200,255,0.35)');
+  g.addColorStop(1, 'rgba(90,150,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+function burstTex(size) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  const cx = size / 2;
+  const ray = (ang, len, wid, a) => {
+    ctx.save(); ctx.translate(cx, cx); ctx.rotate(ang);
+    const g = ctx.createLinearGradient(-len, 0, len, 0);
+    g.addColorStop(0, 'rgba(255,255,255,0)');
+    g.addColorStop(0.5, `rgba(255,255,255,${a})`);
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(-len, -wid / 2, len * 2, wid);
+    ctx.restore();
+  };
+  ray(0, size * 0.48, 2.5, 0.9);
+  ray(Math.PI / 2, size * 0.48, 2.5, 0.9);
+  ray(Math.PI / 4, size * 0.26, 1.6, 0.35);
+  ray(-Math.PI / 4, size * 0.26, 1.6, 0.35);
+  ray(Math.PI / 8, size * 0.34, 1.2, 0.22);
+  ray(-Math.PI / 8, size * 0.34, 1.2, 0.22);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+function flareQuad(tex, w, h, color, opacity) {
+  const Basic = THREE.MeshBasicNodeMaterial || THREE.MeshBasicMaterial;
+  const m = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new Basic({
+      map: tex, color: new THREE.Color(color),
+      transparent: true, opacity,
+      blending: THREE.AdditiveBlending,
+      depthTest: false, depthWrite: false
+    })
+  );
+  m.scale.set(w, h, 1);
+  m.userData.baseScale = [w, h];
+  m.userData.baseOpacity = opacity;
+  flareScene.add(m);
+  return m;
+}
+
+const texHexA = hexTex(128, 'rgba(255,180,120,0.55)', false);
+const texHexB = hexTex(128, 'rgba(120,200,255,0.5)', false);
+const texRing = hexTex(128, 'rgba(190,230,255,0.6)', true);
+const texStreak = streakTex(512, 8);
+const texBurst = burstTex(256);
+
+const elGlow   = flareQuad(texGlow,   0.55, 0.55, 0xdcefff, 0.85);
+const elBurst  = flareQuad(texBurst,  0.75, 0.75, 0xffffff, 0.75);
+const elStreak = flareQuad(texStreak, 1.70, 0.05, 0x9fc8ff, 0.55);
+
+const ghosts = [
+  { el: flareQuad(texHexA, 0.11, 0.11, 0xffb478, 0.30), k: 0.32 },
+  { el: flareQuad(texGlow, 0.07, 0.07, 0xff9a6a, 0.22), k: 0.55 },
+  { el: flareQuad(texHexB, 0.19, 0.19, 0x7ec8ff, 0.24), k: 0.85 },
+  { el: flareQuad(texRing, 0.34, 0.34, 0xbfe4ff, 0.30), k: 1.18 },
+  { el: flareQuad(texHexA, 0.13, 0.13, 0xffd0a0, 0.20), k: 1.45 },
+  { el: flareQuad(texGlow, 0.26, 0.26, 0x8fd8ff, 0.16), k: 1.75 }
+];
+
+
+const flareAnchor = new THREE.Vector3();
+const flareOffset = new THREE.Vector3(0.34, 0.86, 0.30);
+const flareNDC = new THREE.Vector3();
+const flareSmooth = { x: 0, y: 0, vis: 0, init: false };
+const camDir = new THREE.Vector3();
+const toLight = new THREE.Vector3();
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  smoothstep easing — no hard clamping edges
+// ═══════════════════════════════════════════════════════════════════
+
+const ease = (e0, e1, x) => {
+  const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+};
+
+function updateFlare(t, dt) {
+
+  rig.updateMatrixWorld();
+  flareAnchor.setFromMatrixPosition(rig.matrixWorld).add(flareOffset);
+
+  if (uRingWobble.value > 0) {
+    ring.updateMatrixWorld();
+    _flrInv.copy(ring.matrixWorld).invert();
+    _flrLocal.copy(flareAnchor).applyMatrix4(_flrInv);
+    const d = rippleJS(_flrLocal) * uRingWobble.value;
+    if (d !== 0) {
+      const cl = Math.hypot(_flrLocal.x, _flrLocal.z) || 1;
+      _flrDir.set(
+        _flrLocal.x - (_flrLocal.x / cl) * 0.78,
+        _flrLocal.y,
+        _flrLocal.z - (_flrLocal.z / cl) * 0.78
+      ).normalize();
+      _flrLocal.addScaledVector(_flrDir, d);
+      flareAnchor.copy(_flrLocal).applyMatrix4(ring.matrixWorld);
+    }
+  }
+  flareNDC.copy(flareAnchor).project(camera);
+
+  const aspectR = innerWidth / innerHeight;
+  const tx = flareNDC.x * aspectR, ty = flareNDC.y;
+
+  // is the light in front of the camera at all?
+  camera.getWorldDirection(camDir);
+  toLight.copy(flareAnchor).sub(camera.position).normalize();
+  const facing = camDir.dot(toLight); // 1 = dead ahead
+
+  // Eased visibility. Ranges are generous: the flare only fades once the
+  // source is genuinely leaving the frame or swinging behind the camera.
+  const edgeX = ease(2.2, 1.0, Math.abs(flareNDC.x));
+  const edgeY = ease(2.2, 1.0, Math.abs(flareNDC.y));
+  const front = ease(-0.1, 0.25, facing);
+  const targetVis = edgeX * edgeY * front * params.flareStrength;
+
+  // temporal smoothing — framerate independent, kills the per-frame jitter
+  if (!flareSmooth.init) {
+    flareSmooth.x = tx; flareSmooth.y = ty; flareSmooth.vis = targetVis;
+    flareSmooth.init = true;
+  }
+  const posLag = 1 - Math.pow(0.0001, dt);   // fast but smoothed
+  const visLag = 1 - Math.pow(0.00005, dt);  // slightly softer for opacity
+  flareSmooth.x += (tx - flareSmooth.x) * posLag;
+  flareSmooth.y += (ty - flareSmooth.y) * posLag;
+  flareSmooth.vis += (targetVis - flareSmooth.vis) * visLag;
+
+  const x = flareSmooth.x, y = flareSmooth.y, vis = flareSmooth.vis;
+  const twinkle = 0.94 + Math.sin(t * 2.6) * 0.04 + Math.sin(t * 6.1) * 0.02;
+
+  const place = (el, px, py, sc, op) => {
+    el.position.set(px, py, 0);
+    const [bw, bh] = el.userData.baseScale;
+    el.scale.set(bw * sc, bh * sc, 1);
+    el.material.opacity = el.userData.baseOpacity * op;
+    el.visible = op > 0.002;
+  };
+
+  place(elGlow,  x, y, 1 + Math.sin(t * 1.9) * 0.03, vis * twinkle);
+  place(elBurst, x, y, 1 + Math.sin(t * 1.4) * 0.04, vis * twinkle * 0.9);
+  place(elStreak, x, y, 1, vis * twinkle * 0.8);
+  elBurst.rotation.z = Math.sin(t * 0.1) * 0.03;
+
+  for (const g of ghosts) {
+    // ghosts ride the axis from the light through screen centre
+    place(g.el, -x * g.k, -y * g.k, 1, vis);
+  }
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  orbit camera
+// ═══════════════════════════════════════════════════════════════════
+
+const target = new THREE.Vector3(0, -0.06, 0);
+const sph = new THREE.Spherical().setFromVector3(
+  camera.position.clone().sub(target)
+);
+let lastFraming = null;
+let paramsReady = false;   // true once the params object exists
+let pane = null;
+
+const PHI_MAX = 1.229 + 0.4521739130; // orbit ceiling: rotate V <= 0.4521739130
+const applyCamera = () => {
+  sph.phi = Math.max(0.05, Math.min(PHI_MAX, sph.phi));
+  sph.radius = Math.max(2.0, Math.min(14.0, sph.radius));
+  camera.position.setFromSpherical(sph).add(target);
+  camera.lookAt(target);
+  camera.updateMatrixWorld(true);
+  syncCameraParams();
+};
+
+let syncingCamera = false;
+function syncCameraParams() {
+  if (!paramsReady || syncingCamera) return;
+  syncingCamera = true;
+
+  params.startTheta = sph.theta - (-0.522);
+  params.startPhi = sph.phi - 1.229;
+  params.startShiftX = target.x;
+  params.startShiftY = target.y - (-0.06);
+
+  const fovY = camera.fov * Math.PI / 180;
+  const fovX = 2 * Math.atan(Math.tan(fovY / 2) * (innerWidth / innerHeight));
+  const visW = 2 * sph.radius * Math.tan(fovX / 2);
+  const visH = 2 * sph.radius * Math.tan(fovY / 2);
+  params.startFill = 2.0 / Math.min(visW, visH);
+
+  lastFraming = [params.startFill, params.startTheta, params.startPhi,
+                 params.startShiftX, params.startShiftY].join();
+
+  if (pane) pane.refresh();
+  syncingCamera = false;
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  startup framing.
+// ═══════════════════════════════════════════════════════════════════
+
+function frameStart() {
+  // Guard the write-back: applyCamera() below calls syncCameraParams(),
+  // which would immediately recompute the params from the camera we are
+  // in the middle of setting — rounding the saved values back at us.
+  syncingCamera = true;
+  const P = paramsReady ? params : null;
+  // Square onto the hole by default (theta -29.9deg, phi 70.4deg is the
+  // exact hole axis), with offsets so the view can be nudged precisely.
+  sph.theta = -0.522 + (P ? P.startTheta : 0);
+  sph.phi = 1.229 + (P ? P.startPhi : 0);
+  // vertical framing: shifts the ring up/down in frame
+  target.y = -0.06 + (P ? P.startShiftY : 0);
+  target.x = P ? P.startShiftX : 0;
+  // Distance is derived from the viewport so the ring keeps the same
+  // on-screen size regardless of window shape, rather than being a fixed
+  // number tuned to one aspect ratio.
+  const aspect = innerWidth / innerHeight;
+  const fovY = camera.fov * Math.PI / 180;
+  const fovX = 2 * Math.atan(Math.tan(fovY / 2) * aspect);
+  const D = 2.0;                       // ring diameter (outer radius 1.0)
+  const fillW = paramsReady ? params.startFill : 0.3688989901;
+  // distance so the ring spans fillW of the width...
+  const dW = D / (2 * fillW * Math.tan(fovX / 2));
+  // ...and never more than fillW of the height either (matters on wide
+  // windows, where fitting purely by width would overflow vertically)
+  const dH = D / (2 * fillW * Math.tan(fovY / 2));
+  sph.radius = Math.max(2.0, Math.min(14.0, Math.max(dW, dH)));
+  applyCamera();
+  syncingCamera = false;
+  // keep the change-detector aligned with the values we just applied, so
+  // the next unrelated slider tweak doesn't see a stale key and re-frame
+  if (paramsReady) {
+    lastFraming = [params.startFill, params.startTheta, params.startPhi,
+                   params.startShiftX, params.startShiftY].join();
+  }
+}
+applyCamera();
+
+const pointers = new Map();
+let lastPinch = 0;
+const el = renderer.domElement;
+el.addEventListener('pointerdown', e => {
+  el.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    lastPinch = Math.hypot(a.x - b.x, a.y - b.y);
+  }
+});
+el.addEventListener('pointermove', e => {
+  if (!pointers.has(e.pointerId)) return;
+  const prev = pointers.get(e.pointerId);
+  const dx = e.clientX - prev.x, dy = e.clientY - prev.y;
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pointers.size === 1) {
+    sph.theta -= dx * 0.005;
+    sph.phi -= dy * 0.005;
+    cameraDirty = true; // committed once per frame, in the render loop
+  } else if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    const pinch = Math.hypot(a.x - b.x, a.y - b.y);
+    if (lastPinch > 0) {
+      sph.radius *= lastPinch / pinch;
+      cameraDirty = true;
+    }
+    lastPinch = pinch;
+  }
+});
+const endPointer = e => { pointers.delete(e.pointerId); lastPinch = 0; };
+el.addEventListener('pointerup', endPointer);
+el.addEventListener('pointercancel', endPointer);
+el.addEventListener('wheel', e => {
+  e.preventDefault();
+  sph.radius *= 1 + e.deltaY * 0.001;
+  cameraDirty = true;
+}, { passive: false });
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  param(s)
+// ═══════════════════════════════════════════════════════════════════
+
+const params = {
+  color: '#ffffff',
+  transmission: glass.transmission,
+  thickness: glass.thickness,
+  roughness: glass.roughness,
+  metalness: glass.metalness,
+  ior: glass.ior,
+  dispersion: glass.dispersion,
+  iridescence: glass.iridescence,
+  iridescenceIOR: glass.iridescenceIOR,
+  iridThicknessMin: 120,
+  iridThicknessMax: 480,
+  clearcoat: glass.clearcoat,
+  clearcoatRoughness: glass.clearcoatRoughness,
+  sheen: 0,
+  sheenRoughness: 1,
+  sheenColor: '#ffffff',
+  specularIntensity: glass.specularIntensity,
+  specularColor: '#ffffff',
+  attenuationColor: '#dff2ff',
+  attenuationDistance: glass.attenuationDistance,
+  envMapIntensity: glass.envMapIntensity,
+  exposure: renderer.toneMappingExposure,
+  edgeStrength: uFresnelStrength.value,
+  edgePower: uFresnelPower.value,
+  edgeSpeed: uRainbowSpeed.value,
+  // caustics
+  caustics: true,
+  showRing: true,
+  floorCaustics: true,
+  envSat: 1.0,
+  envBright: 1.0,
+  envBands: 5.0,
+  envColorA: '#2b6bff',
+  envColorB: '#ff3c8a',
+  envColorC: '#18e0d8',
+  envCausticAmt: 2.99,
+  causticOcclusion: uCausticOcclusion.value,
+  causticIntensity: uCausticIntensity.value,
+  causticScale: uCausticScale.value,
+  causticSpeed: uCausticSpeed.value,
+  causticChroma: uChroma.value,
+  causticColor: '#eaf6ff',
+  spotIntensity: spot.intensity,
+  spotAngle: spot.angle,
+  // scene
+  wetFloor: true,
+  wetAmount: 0.95,
+  wetBlur: 0.15,
+  wetDistort: 0.22,
+  wetScale: 2.2,
+  wetSpeed: 0.12,
+  wetFresnel: 2.4,
+  wetRough: 0.12,
+  wetTint: '#d6c7f9',
+  startFill: 0.3688989901,
+  startTheta: 0.626,
+  startPhi: 0.3799793782,
+  startShiftX: 0.0,
+  startShiftY: 0.0,
+  lockFraming: false,
+  fov: 38,
+  autoSway: true,
+  lensFlare: true,
+  flareStrength: 1.0,
+  floorColor: '#63808f',
+  // golden cube swarm
+  swarmEnabled: true,
+  soundEnabled: true,
+  soundVolume: 0.5,
+  ringRipple: true,
+  ringWobble: 0.05,
+  swarmSpeed: 0.1,
+  swarmScatter: 0.21,
+  swarmSize: 0.64,
+  swarmMouse: true,
+  swarmMouseRadius: 0.55,
+  swarmMouseForce: 45,
+  swarmGlassMode: 'custom',
+  swarmXray: false,
+  swarmXrayAmt: 0.25,
+  swarmXrayColor: '#d99a35',
+  swarmRefract: true,
+  swarmRefractAmt: 2.0,
+  swarmRefractShift: 0.22,
+  swarmRefractChroma: 0.32,
+  swarmRefractSpectral: 0.25,
+  swarmRefractBlur: 0.15,
+  swarmRefractSat: 1.4,
+  swarmRefractFlip: false
+};
+
+paramsReady = true;
+frameStart();
+
+let lastEnvKey = null;
+let lastGlassKey = null;
+let camReadoutFn = null;
+let envTimer = null;
+let envPrimed = false;   // first env bake runs immediately, not debounced
+
+function applyParams() {
+  if (syncingCamera) return;
+  glass.color.set(params.color);
+  glass.transmission = params.transmission;
+  glass.thickness = params.thickness;
+  glass.roughness = params.roughness;
+  glass.metalness = params.metalness;
+  glass.ior = params.ior;
+  glass.dispersion = params.dispersion;
+  glass.iridescence = params.iridescence;
+  glass.iridescenceIOR = params.iridescenceIOR;
+  glass.iridescenceThicknessRange = [params.iridThicknessMin, params.iridThicknessMax];
+  glass.clearcoat = params.clearcoat;
+  glass.clearcoatRoughness = params.clearcoatRoughness;
+  glass.sheen = params.sheen;
+  glass.sheenRoughness = params.sheenRoughness;
+  glass.sheenColor.set(params.sheenColor);
+  glass.specularIntensity = params.specularIntensity;
+  glass.specularColor.set(params.specularColor);
+  glass.attenuationColor.set(params.attenuationColor);
+  glass.attenuationDistance = params.attenuationDistance;
+  glass.envMapIntensity = params.envMapIntensity;
+  const glassKey = [params.color, params.transmission, params.thickness,
+    params.roughness, params.metalness, params.ior, params.dispersion,
+    params.iridescence, params.iridescenceIOR, params.iridThicknessMin,
+    params.iridThicknessMax, params.clearcoat, params.clearcoatRoughness,
+    params.sheen, params.sheenRoughness, params.sheenColor,
+    params.specularIntensity, params.specularColor, params.attenuationColor,
+    params.attenuationDistance, params.envMapIntensity].join();
+  if (glassKey !== lastGlassKey) {
+    lastGlassKey = glassKey;
+    glass.needsUpdate = true;
+  }
+
+  renderer.toneMappingExposure = params.exposure;
+  uFresnelStrength.value = params.edgeStrength;
+  uFresnelPower.value = params.edgePower;
+  uRainbowSpeed.value = params.edgeSpeed;
+
+  ring.castShadow = params.caustics;
+
+  // ghost mode: keep the caster in the shadow pass, hide it from the camera
+  const wantGhost = !params.showRing;
+  const isGhost = glass.outputNode !== null;
+  if (wantGhost !== isGhost) {
+    glass.outputNode = wantGhost ? vec4(0.0) : null;
+    glass.depthWrite = !wantGhost;
+    glass.needsUpdate = true;
+  }
+
+  const envKey = [params.envSat, params.envBright, params.envBands,
+                  params.envColorA, params.envColorB, params.envColorC,
+                  params.envCausticAmt, params.causticScale,
+                  params.causticChroma, params.causticIntensity,
+                  params.causticOcclusion, params.causticColor].join();
+  if (envKey !== lastEnvKey) {
+    lastEnvKey = envKey;
+    envState.sat = params.envSat;
+    envState.bright = params.envBright;
+    envState.bands = params.envBands;
+    envState.causticAmt = params.envCausticAmt;
+    // shared with the floor projection — one source of truth
+    envState.causticScale = params.causticScale * 2.3;
+    envState.causticChroma = params.causticChroma;
+    envState.causticIntensity = params.causticIntensity;
+    envState.causticOcclusion = params.causticOcclusion;
+    envState.causticColor.set(params.causticColor);
+    envColorA.set(params.envColorA);
+    envColorB.set(params.envColorB);
+    envColorC.set(params.envColorC);
+    // The 120ms debounce keeps slider drags smooth, but on the FIRST apply
+    // it would leave the scene showing a stale environment. Bake at once.
+    clearTimeout(envTimer);
+    if (envPrimed) {
+      envTimer = setTimeout(() => refreshEnv().catch(e => console.warn("env bake failed:", e)), 120);
+    } else {
+      envPrimed = true;
+      refreshEnv().catch(e => console.warn("env bake failed:", e));
+    }
+  }
+
+  if (floor.receiveShadow !== params.floorCaustics) {
+    floor.receiveShadow = params.floorCaustics;
+    floorMat.needsUpdate = true;
+  }
+  uCausticOcclusion.value = params.causticOcclusion;
+  uCausticIntensity.value = params.causticIntensity;
+  uCausticScale.value = params.causticScale;
+  uCausticSpeed.value = params.causticSpeed;
+  uChroma.value = params.causticChroma;
+  uCausticColor.value.set(params.causticColor);
+  uIorShadow.value = params.ior; // keep shadow refraction in sync with IOR
+  spot.intensity = params.spotIntensity;
+  spot.angle = params.spotAngle;
+
+  floorMat.color.set(params.floorColor);
+  const framingKey = [params.startFill, params.startTheta, params.startPhi,
+                      params.startShiftX, params.startShiftY].join();
+  if (framingKey !== lastFraming) {
+    lastFraming = framingKey;
+    frameStart();
+  }
+  if (camera.fov !== params.fov) {
+    camera.fov = params.fov;
+    camera.updateProjectionMatrix();
+  }
+  uWetAmount.value = params.wetFloor ? params.wetAmount : 0;
+  uWetBlur.value = params.wetBlur;
+  uWetDistort.value = params.wetDistort;
+  uWetScale.value = params.wetScale;
+  uWetSpeed.value = params.wetSpeed;
+  uWetFresnel.value = params.wetFresnel;
+  uWetRough.value = params.wetRough;
+  uWetTint.value.set(params.wetTint);
+
+  flareScene.visible = params.lensFlare;
+  uRingWobble.value = params.ringRipple ? params.ringWobble : 0;
+
+  swarm.visible = params.swarmEnabled;
+  swarmState.speed = params.swarmSpeed;
+  swarmState.scatter = params.swarmScatter;
+  swarmState.size = params.swarmSize;
+  swarmState.mouse = params.swarmMouse;
+  swarmState.mouseRadius = params.swarmMouseRadius;
+  swarmState.mouseForce = params.swarmMouseForce;
+  // glass mode: physical (v54 backdrop dispersion) vs custom (synced)
+  const physGlass = params.swarmGlassMode === 'physical';
+  if (cubeMat.transparent !== !physGlass) {
+    cubeMat.transparent = !physGlass;
+    cubeMat.needsUpdate = true;
+  }
+  swarm.renderOrder = physGlass ? 0 : 6;
+  swarmGhost.visible = params.swarmEnabled && params.swarmXray && !physGlass;
+  ghostMat.opacity = params.swarmXrayAmt;
+  ghostMat.color.set(params.swarmXrayColor);
+  uCubeIor.value = params.ior; // refracted cubes bend with the glass IOR
+  // 'refract in glass' now works in BOTH modes: stacked on physical it
+  // reaches cubes the backdrop can't see, softening the dead angles
+  uCubeRefrAmt.value = params.swarmRefract ? params.swarmRefractAmt : 0;
+  uCubeRefrShift.value = params.swarmRefractShift;
+  uCubeRefrChroma.value = params.swarmRefractChroma;
+  uCubeSpectral.value = params.swarmRefractSpectral;
+  uCubeRefrBlur.value = params.swarmRefractBlur;
+  uCubeRefrSat.value = params.swarmRefractSat;
+  uCubeFlip.value = params.swarmRefractFlip ? 1 : 0;
+}
+
+async function loadPane() {
+  const urls = [
+    'https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.min.js',
+    'https://unpkg.com/tweakpane@4.0.5/dist/tweakpane.min.js',
+    'https://esm.sh/tweakpane@4.0.5'
+  ];
+  let Pane = null;
+  for (const url of urls) {
+    try {
+      ({ Pane } = await import(/* @vite-ignore */ url));
+      if (Pane) break;
+    } catch (_) { /* try next CDN */ }
+  }
+  if (!Pane) {
+    document.getElementById('tag').textContent +=
+      ' · tweakpane CDN unreachable — scene runs without panel';
+    return;
+  }
+
+  pane = new Pane({
+    container: document.getElementById('pane-container'),
+    title: 'MeshPhysicalNodeMaterial · v102'
+  });
+  pane.on('change', applyParams);
+
+  const failed = [];
+  const bind = (folder, key, opts) => {
+    try {
+      const b = folder.addBinding(params, key, opts);
+      b.on('change', applyParams);
+    } catch (err) {
+      failed.push(key);
+      console.error('pane binding failed:', key, err);
+    }
+  };
+
+  const fGlass = pane.addFolder({ title: 'glass' });
+  bind(fGlass, 'color');
+  bind(fGlass, 'transmission', { min: 0, max: 1 });
+  bind(fGlass, 'thickness', { min: 0, max: 5 });
+  bind(fGlass, 'roughness', { min: 0, max: 1 });
+  bind(fGlass, 'metalness', { min: 0, max: 1 });
+  bind(fGlass, 'ior', { min: 1, max: 2.333 });
+  bind(fGlass, 'dispersion', { min: 0, max: 20 });
+
+  const fCaustics = pane.addFolder({ title: 'caustics (floor + baked into glass)' });
+  bind(fCaustics, 'caustics');
+  bind(fCaustics, 'showRing', { label: 'show ring' });
+  bind(fCaustics, 'floorCaustics', { label: 'floor caustics' });
+  bind(fCaustics, 'envCausticAmt', { label: 'caustics in glass', min: 0, max: 5 });
+
+  const fEnv = pane.addFolder({ title: 'refracted environment (invisible)' });
+  bind(fEnv, 'envSat', { label: 'colour amount', min: 0, max: 3 });
+  bind(fEnv, 'envBright', { label: 'brightness', min: 0.2, max: 3 });
+  bind(fEnv, 'envBands', { label: 'bands', min: 1, max: 12, step: 1 });
+  bind(fEnv, 'envColorA', { label: 'colour A' });
+  bind(fEnv, 'envColorB', { label: 'colour B' });
+  bind(fEnv, 'envColorC', { label: 'colour C' });
+  bind(fCaustics, 'causticOcclusion', { min: 0, max: 20 });
+  bind(fCaustics, 'causticIntensity', { min: 0, max: 80 });
+  bind(fCaustics, 'causticScale', { min: 0.5, max: 10 });
+  bind(fCaustics, 'causticSpeed', { min: 0, max: 0.5 });
+  bind(fCaustics, 'causticChroma', { min: 0, max: 0.08 });
+  bind(fCaustics, 'causticColor');
+  bind(fCaustics, 'spotIntensity', { min: 0, max: 200 });
+  bind(fCaustics, 'spotAngle', { min: 0.1, max: 1.2 });
+
+  const fIrid = pane.addFolder({ title: 'iridescence', expanded: false });
+  bind(fIrid, 'iridescence', { min: 0, max: 1 });
+  bind(fIrid, 'iridescenceIOR', { min: 1, max: 2.5 });
+  bind(fIrid, 'iridThicknessMin', { min: 0, max: 1200, step: 1 });
+  bind(fIrid, 'iridThicknessMax', { min: 0, max: 1200, step: 1 });
+
+  const fCoat = pane.addFolder({ title: 'clearcoat / sheen / specular', expanded: false });
+  bind(fCoat, 'clearcoat', { min: 0, max: 1 });
+  bind(fCoat, 'clearcoatRoughness', { min: 0, max: 1 });
+  bind(fCoat, 'sheen', { min: 0, max: 1 });
+  bind(fCoat, 'sheenRoughness', { min: 0, max: 1 });
+  bind(fCoat, 'sheenColor');
+  bind(fCoat, 'specularIntensity', { min: 0, max: 2 });
+  bind(fCoat, 'specularColor');
+
+  const fVol = pane.addFolder({ title: 'volume', expanded: false });
+  bind(fVol, 'attenuationColor');
+  bind(fVol, 'attenuationDistance', { min: 0.1, max: 10 });
+
+  const fEdge = pane.addFolder({ title: 'rainbow edge (tsl)', expanded: false });
+  bind(fEdge, 'edgeStrength', { min: 0, max: 1 });
+  bind(fEdge, 'edgePower', { min: 0.5, max: 8 });
+  bind(fEdge, 'edgeSpeed', { min: 0, max: 0.5 });
+
+  const fWet = pane.addFolder({ title: 'wet floor' });
+  bind(fWet, 'wetFloor', { label: 'enabled' });
+  bind(fWet, 'wetAmount', { label: 'reflectivity', min: 0, max: 1 });
+  bind(fWet, 'wetBlur', { label: 'blurriness', min: 0, max: 1.5 });
+  bind(fWet, 'wetDistort', { label: 'ripple distort', min: 0, max: 1.5 });
+  bind(fWet, 'wetScale', { label: 'ripple scale', min: 0.3, max: 8 });
+  bind(fWet, 'wetSpeed', { label: 'ripple speed', min: 0, max: 0.6 });
+  bind(fWet, 'wetFresnel', { label: 'fresnel', min: 0.5, max: 6 });
+  bind(fWet, 'wetRough', { label: 'surface roughness', min: 0.05, max: 0.95 });
+  bind(fWet, 'wetTint', { label: 'tint' });
+
+  const fCam = pane.addFolder({ title: 'camera framing' });
+  bind(fCam, 'fov', { label: 'field of view', min: 15, max: 75 });
+  bind(fCam, 'startFill', { label: 'ring fills', min: 0.25, max: 0.95 });
+  bind(fCam, 'startTheta', { label: 'rotate H', min: -0.8, max: 0.8 });
+  bind(fCam, 'startPhi', { label: 'rotate V', min: -0.8, max: 0.4521739130 });
+  bind(fCam, 'startShiftX', { label: 'shift X', min: -1.5, max: 1.5 });
+  bind(fCam, 'startShiftY', { label: 'shift Y', min: -1.5, max: 1.5 });
+  bind(fCam, 'lockFraming', { label: 'refit on resize' });
+  fCam.addButton({ title: 'reset to start view' }).on('click', () => {
+    frameStart();
+  });
+  // Live readout of the current view. Updated every frame from the render
+  // loop (see camReadoutFn), so dragging to orbit and scrolling to zoom
+  // both update it immediately — read the numbers off and pass them on.
+  try {
+    const camReadout = fCam.addBlade({ view: 'text', label: 'current view',
+      parse: v => v, value: '', disabled: true });
+    camReadoutFn = () => {
+      camReadout.value =
+        'th ' + (sph.theta + 0.522).toFixed(3) +
+        '  ph ' + (sph.phi - 1.229).toFixed(3) +
+        '  fill ' + (2.0 / (2 * sph.radius *
+          Math.tan(2 * Math.atan(Math.tan(camera.fov * Math.PI / 360) *
+          (innerWidth / innerHeight)) / 2))).toFixed(3);
+    };
+  } catch (err) {
+    camReadoutFn = () => {
+      const tg = document.getElementById('tag');
+      if (tg) tg.textContent = 'v35 — view: th ' +
+        (sph.theta + 0.522).toFixed(3) + '  ph ' + (sph.phi - 1.229).toFixed(3) +
+        '  r ' + sph.radius.toFixed(2);
+    };
+  }
+
+  const fSwarm = pane.addFolder({ title: 'golden cube swarm' });
+  bind(fSwarm, 'swarmEnabled', { label: 'enabled' });
+  bind(fSwarm, 'swarmGlassMode', { label: 'glass mode',
+    options: { 'custom (synced)': 'custom', 'physical (v54)': 'physical' } });
+  bind(fSwarm, 'swarmSpeed', { label: 'speed', min: 0, max: 0.2 });
+  bind(fSwarm, 'swarmScatter', { label: 'spread', min: 0, max: 0.6 });
+  bind(fSwarm, 'swarmSize', { label: 'cube size', min: 0.05, max: 2.5 });
+  bind(fSwarm, 'swarmMouse', { label: 'mouse repel' });
+  bind(fSwarm, 'swarmMouseRadius', { label: 'repel radius', min: 0.1, max: 1.5 });
+  bind(fSwarm, 'swarmMouseForce', { label: 'repel force', min: 0, max: 150 });
+  bind(fSwarm, 'swarmXray', { label: 'x-ray through glass' });
+  bind(fSwarm, 'swarmXrayAmt', { label: 'x-ray strength', min: 0, max: 1 });
+  bind(fSwarm, 'swarmXrayColor', { label: 'x-ray gold tint' });
+  bind(fSwarm, 'swarmRefract', { label: 'refract in glass' });
+  bind(fSwarm, 'swarmRefractAmt', { label: 'refraction amount', min: 0, max: 5 });
+  bind(fSwarm, 'swarmRefractShift', { label: 'refraction shift', min: 0, max: 0.5 });
+  bind(fSwarm, 'swarmRefractChroma', { label: 'refr. dispersion', min: 0, max: 0.6 });
+  bind(fSwarm, 'swarmRefractSpectral', { label: 'refr. iridescence', min: 0, max: 1 });
+  bind(fSwarm, 'swarmRefractBlur', { label: 'refr. blur', min: 0, max: 1.5 });
+  bind(fSwarm, 'swarmRefractSat', { label: 'refr. saturation', min: 0, max: 3 });
+  bind(fSwarm, 'swarmRefractFlip', { label: 'flip refr. Y' });
+
+  const fSound = pane.addFolder({ title: 'ambient sound (click once to start)' });
+  bind(fSound, 'soundEnabled', { label: 'enabled' });
+  bind(fSound, 'soundVolume', { label: 'volume', min: 0, max: 1 });
+
+  const fRipple = pane.addFolder({ title: 'ring ripple (hover the glass)' });
+  bind(fRipple, 'ringRipple', { label: 'enabled' });
+  bind(fRipple, 'ringWobble', { label: 'wobble height', min: 0, max: 0.2 });
+
+  const fScene = pane.addFolder({ title: 'scene', expanded: false });
+  bind(fScene, 'envMapIntensity', { min: 0, max: 4 });
+  bind(fScene, 'exposure', { min: 0.2, max: 3 });
+  bind(fScene, 'floorColor');
+  bind(fScene, 'autoSway');
+  bind(fScene, 'lensFlare', { label: 'lens flare' });
+  bind(fScene, 'flareStrength', { label: 'flare strength', min: 0, max: 2 });
+
+  if (failed.length) {
+    document.getElementById('tag').textContent +=
+      ' · pane bindings failed: ' + failed.join(', ');
+  }
+
+  applyParams();
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  resize + loop
+// ═══════════════════════════════════════════════════════════════════
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  cubeRT.setSize(Math.floor(innerWidth * 0.5), Math.floor(innerHeight * 0.5));
+  renderer.getDrawingBufferSize(_mirDBS);
+  mirrorRT.setSize(_mirDBS.x, _mirDBS.y);
+  aspect.value = innerWidth / innerHeight;
+  if (params && params.lockFraming) frameStart();
+});
+
+const clock = new THREE.Clock();
+let lastT = 0;
+let cameraDirty = false; // orbit input pending, applied at render time
+const baseY = rig.rotation.y, baseX = rig.rotation.x;
+
+async function start() {
+  await renderer.init();
+
+  rendererReady = true;
+  await refreshEnv();
+
+  applyParams();
+  frameStart();
+
+  scene.updateMatrixWorld(true);
+  camera.updateMatrixWorld(true);
+
+  syncingCamera = true;
+  const warmRadius = sph.radius;
+  for (let i = 0; i < 4; i++) {
+    sph.radius = warmRadius * (i % 2 === 0 ? 1.0005 : 1.0);
+    applyCamera();
+    scene.updateMatrixWorld(true);
+    renderer.render(scene, camera);
+    await new Promise(r => requestAnimationFrame(r));
+  }
+
+  sph.radius = warmRadius;
+  applyCamera();
+  syncingCamera = false;
+  renderer.render(scene, camera);
+
+  document.getElementById('loader').classList.add('hidden');
+  renderer.setAnimationLoop(() => {
+    const t = clock.getElapsedTime();
+    const dt = Math.min(0.1, Math.max(0.0001, t - lastT));
+    lastT = t;
+    if (params.autoSway) {
+      rig.rotation.y = baseY + Math.sin(t * 0.21) * 0.10;
+      rig.rotation.x = baseX + Math.sin(t * 0.15 + 1.3) * 0.03;
+    }
+    if (params.lensFlare) updateFlare(t, dt);
+    if (params.swarmEnabled) updateSwarm(t, dt);
+    for (let i = 0; i < RIPPLE_MAX; i++) ripAgeArr[i] += dt;
+    if (audioReady) {
+      const an = actx.currentTime;
+      let en = 0;
+      for (let i = 0; i < RIPPLE_MAX; i++) {
+        if (ripAgeArr[i] < 4) en += ripStrArr[i] * Math.exp(-2.6 * ripAgeArr[i]);
+      }
+      padFilter.frequency.setTargetAtTime(520 + Math.min(en, 3) * 450, an, 0.1);
+      if (glassGain) {
+        glassGain.gain.setTargetAtTime(
+          params.soundEnabled ? Math.min(en, 2.5) * 0.095 : 0, an, 0.12);
+        glassBP.frequency.setTargetAtTime(
+          640 + Math.min(en, 2.5) * 90, an, 0.2);
+      }
+      const headF = (t * swarmState.speed) % 1;
+      const cover = circOverlap(headF, 0.5, holeU0, holeU1) /
+                    Math.max(1e-4, holeU1 - holeU0);
+
+      const disturb = swarmState.disturb || 0;
+      shimmerGain.gain.setTargetAtTime(
+        params.soundEnabled
+          ? cover * 0.10 + Math.min(disturb * 0.18, 0.05) : 0, an, 0.4);
+      masterGain.gain.setTargetAtTime(
+        params.soundEnabled ? params.soundVolume * 0.6 : 0, an, 0.3);
+
+      const lapNow = Math.floor(t * swarmState.speed);
+      if (lapNow !== audioLap) {
+        audioLap = lapNow;
+        const ang = lapAngle(lapNow);
+        const semis = ang === 0 ? 0 : (ang === Math.PI ? -2 : 3);
+        const mulF = Math.pow(2, semis / 12);
+        for (const { o, r } of padOscs) {
+          o.frequency.setTargetAtTime(PAD_ROOT * r * mulF, an, 0.8);
+        }
+      }
+    }
+
+    if (params.swarmEnabled && params.swarmRefract) {
+      rtHolder.matrix.copy(swarmHolder.matrixWorld);
+      rtScene.environment = scene.environment; // IBL for the lit gold
+      renderer.setRenderTarget(cubeRT);
+      renderer.render(rtScene, camera);
+      renderer.setRenderTarget(null);
+    }
+
+    if (cameraDirty) { cameraDirty = false; applyCamera(); }
+    if (camReadoutFn) camReadoutFn();
+    if (params.wetFloor) renderMirror();
+    renderer.render(scene, camera);
+
+    if (params.lensFlare) {
+      renderer.autoClear = false;
+      flareCam.left = -innerWidth / innerHeight;
+      flareCam.right = innerWidth / innerHeight;
+      flareCam.updateProjectionMatrix();
+      renderer.render(flareScene, flareCam);
+      renderer.autoClear = true;
+    }
+  });
+  loadPane();
+}
+start().catch(err => __fail(err.message || String(err)));
+</script>
+</body>
+</html>
