@@ -1,0 +1,2559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Jump jump...</title>
+<link rel="stylesheet" href="styles/style.css"/>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.182.0/three.webgpu.js",
+    "three/webgpu": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.182.0/three.webgpu.js",
+    "three/tsl": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.182.0/three.tsl.js"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="pane-container"></div>
+<div id="vignette"></div>
+<div id="title-block">
+  <span id="title-eyebrow">Tinker Day #44</span>
+  <span id="title-headline">Jump jump...</span>
+  <p style="font-size: 14px;">
+    Drag the wax shapes to squish &amp;<br>throw them. Drag empty space to<br>rotate.<br><br>
+    Little extra: You can see<br>glass through glass through glass...<br><br>
+    The shapes jump on their own —<br>watch the floor splash.<br />
+  </p>
+</div>
+<footer><a id="nav-prev-all" href="https://dasprinzip.com/tinker/index.html">&#8593; Checkout all days</a><a id="nav-prev" href="https://dasprinzip.com/tinker/day43/"><br>&larr; The Day Before.</a></footer>
+<div id="loader"><div class="spinner"></div><div class="loading-text">loading<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></div></div>
+<div id="tag"></div>
+<div class="badge" id="badge"></div>
+<div class="err" id="err">Could not start the renderer. This demo needs WebGPU or WebGL2.</div>
+<script>
+  const __fail = (msg) => {
+    const l = document.getElementById('loader');
+    if (!l) return;
+    l.classList.remove('hidden');
+    const sp = l.querySelector('.spinner'); if (sp) sp.style.display = 'none';
+    const t = l.querySelector('.loading-text');
+    if (t) t.textContent = 'error — ' + msg;
+  };
+  window.addEventListener('error', e => __fail(e.message || 'script error'));
+  window.addEventListener('unhandledrejection', e =>
+    __fail(e.reason && e.reason.message ? e.reason.message : String(e.reason)));
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import {
+  Fn, Loop, uniform, uniformArray, texture, uv,
+  float, int, vec2, vec3, vec4, mat3,
+  positionLocal, normalLocal, normalView, positionView, positionViewDirection, output,
+  positionWorld, time, screenUV, refract, cos, normalWorld, transformNormalToView,
+  mrt, materialColor, materialReference, attribute,
+  dFdx, dFdy, fract, abs, min, max, clamp, mix, smoothstep, normalize, cross, dot,
+  pow, exp, length, select, step, luminance, mx_noise_float, mx_worley_noise_float
+} from 'three/tsl';
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  Jump... jump... WebGPU / TSL
+// ═══════════════════════════════════════════════════════════════════   
+
+let lastFrameTime = 0, deltaTimeMS = 16;
+
+const GEO_SCALE = 0.5;   // all shapes at half size
+const blurScale = .5;
+const ssaoScale = .5;
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  tweakable param(s)
+// ═══════════════════════════════════════════════════════════════════   
+
+const params = {
+  // colors (float rgb)
+  color1: { r: 0.62, g: 0.78, b: 0.36 }, // pistachio wax
+  color2: { r: 0.13, g: 0.75, b: 0.22 }, // vivid green wax
+  color3: { r: 0.82, g: 0.16, b: 0.16 }, // red wax
+  color4: { r: 0.16, g: 0.42, b: 0.85 }, // blue wax
+  color5: { r: 0.16, g: 0.62, b: 0.42 }, // jade wax
+  color6: { r: 0.93, g: 0.78, b: 0.25 }, // butter wax
+  bgInner: { r: 0.185, g: 0.192, b: 0.208 },
+  bgOuter: { r: 0.077, g: 0.077, b: 0.092 },
+  bgGlow: 0.10,
+  floorBrightness: 0.15,
+  floorFadeStart: 1.8,   // fully solid within this radius...
+  floorFadeEnd: 8.0,     // ...fully dissolved into the background here
+
+  // wet floor (manual planar mirror)
+  wetFloor: true,
+  wetAmount: 0.55,
+  wetBlur: 0.25,
+  wetDistort: 0.22,
+  wetScale: 0.8,
+  wetSpeed: 0.12,
+  wetFresnel: 2.4,
+  wetTint: { r: 0.74, g: 0.84, b: 0.90 },
+
+  // glass ring — plain physical material
+  glassIor: 1.5,
+  glassRoughness: 0.06,
+  glassShift: 0.22,
+  glassIrid: 0.9,      // iridescence: the oily film shimmer from the golden-stream shell
+  glassIridIor: 1.55,
+  glassEnv: 2.12,      // room-environment reflection intensity
+
+  // light
+  lightStrength: 2.3,
+  lightAzimuth: -90,
+  lightElevation: 45,
+  shadowSoftness: 5,      // PCF blur radius — 0 = hard edge
+  shadowMapSize: 2048,    // texel density: lower = softer + cheaper, higher = crisper
+  shadowIntensity: 1.0,   // shadow darkness at the light level (1 = full)
+  shadowBias: 0.0,        // depth offset: pull negative if blur detaches shadows, positive vs acne
+  shadowNormalBias: 0.05, // surface-normal offset: raise if stripes appear at high softness
+  shadowFeather: 1.0,     // penumbra falloff: >1 dissolves the blurred edge to alpha, <1 thickens it
+  shadowPowerBrick: 1.1,
+  shadowPowerFloor: 0.4,
+
+  // material
+  directMix: 0.5,
+  ambientMix: 0.42,
+  specStrength: 0.5,
+  shininess: 7,
+  fresnel: 0.1,
+  specNoise: 0.25,
+  dotNormalAmt: 2.0,
+  dotsEnabled: false, // the embossed stud dots — off leaves smooth jelly cubes
+  dotDensity: 22,
+  dotThickness: 0.25,
+
+  // sss
+  enableSSS: true,
+  sssScale: 8.5,
+  sssLumFactor: 1.25,
+  sssDepthFactor: 25,
+  hueShift: 0.14,
+  tintValueMin: 0.85,
+
+  // ssao
+  enableSSAO: true,
+  ssaoRadius: 0.15,
+  ssaoStrength: 1.0,
+  ssaoMaxDistance: 0.02,
+
+  // composite
+  exposure: 1.3,
+  desaturate: 0.0,
+
+  // camera (two-way: sliders move the camera, dragging updates the sliders)
+  camX: 0.0,
+  camY: 15.0955,
+  camZ: 24.5656,
+
+  // soft floor
+  boilFloor: true,     // impacts dent the floor; dents ripple and spring back
+  boilStrength: 0.75,  // dent depth per unit of impact
+  boilWave: 0.34,      // ripple propagation speed
+  boilSpring: 0.16,    // pull back toward flat
+  boilDamp: 0.84,      // ripple energy loss (rings live ~0.4s)
+  boilMaxDepth: 0.25,  // depth clamp
+
+  // sound
+  soundEnabled: true,
+  soundVolume: 0.5,
+
+  // physics
+  restCalm: true,      // settled shapes damp to true stillness instead of jiggling
+  gravity: -11.23,
+  playArea: 4.2,  // half-extent of the invisible walls (X; Z is 0.8x)
+  pbdSubsteps: 8,       // simulation substeps per frame
+  pbdStiffness: 0.5,    // distance-constraint stiffness (local structure)
+  pbdShape: 0.59,       // form recovery PER FRAME (low = goo, high = rubber)
+  pbdCompress: 0.30,    // how easily material crunches (multiplier on compression)
+  pbdVolume: 0.7,       // internal pressure -> squeezed material bulges outward
+  pbdDamping: 0.03,     // velocity damping
+  autoJump: true,       // idle bricks charge up and leap on their own
+  autoJumpPower: 1.5,   // launch impulse
+};
+
+const albedoColors = [params.color1, params.color2, params.color3, params.color4, params.color5, params.color6];
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  uniforms driven by the pane (synced every frame)
+// ═══════════════════════════════════════════════════════════════════ 
+
+const uLightScale = uniform(params.lightStrength);
+const uShadowPowBrick = uniform(params.shadowPowerBrick);
+const uShadowPowFloor = uniform(params.shadowPowerFloor);
+const uShadowFeather = uniform(params.shadowFeather);
+const uDirectMix = uniform(params.directMix);
+const uAmbientMix = uniform(params.ambientMix);
+const uSpecStrength = uniform(params.specStrength);
+const uShininess = uniform(params.shininess);
+const uFresnelAmt = uniform(params.fresnel);
+const uSpecNoiseAmt = uniform(params.specNoise);
+const uDotNormalAmt = uniform(params.dotNormalAmt);
+const uDotDensity = uniform(params.dotDensity);
+const uDotsOn = uniform(params.dotsEnabled ? 1 : 0);
+const uDotThickness = uniform(params.dotThickness);
+const uSSSScale = uniform(params.sssScale);
+const uSSSLumFactor = uniform(params.sssLumFactor);
+const uSSSDepthFactor = uniform(params.sssDepthFactor);
+const uHueShift = uniform(params.hueShift);
+const uTintVMin = uniform(params.tintValueMin);
+const uSSAOStrength = uniform(params.ssaoStrength);
+const uExposure = uniform(params.exposure);
+const uDesat = uniform(params.desaturate);
+const uFloorBright = uniform(params.floorBrightness);
+const uFloorFadeStart = uniform(params.floorFadeStart);
+const uFloorFadeEnd = uniform(params.floorFadeEnd);
+const uKernelRadius = uniform(params.ssaoRadius);
+const uMinDistance = uniform(0.005);
+const uMaxDistance = uniform(params.ssaoMaxDistance);
+const uBgInner = uniform(new THREE.Color(params.bgInner.r, params.bgInner.g, params.bgInner.b));
+const uBgOuter = uniform(new THREE.Color(params.bgOuter.r, params.bgOuter.g, params.bgOuter.b));
+const uBgGlow = uniform(params.bgGlow);
+const uAspect = uniform(1);
+const uWetAmount = uniform(params.wetAmount);
+const uWetBlur = uniform(params.wetBlur);
+const uWetDistort = uniform(params.wetDistort);
+const uWetScale = uniform(params.wetScale);
+const uWetSpeed = uniform(params.wetSpeed);
+const uWetFresnel = uniform(params.wetFresnel);
+const uWetTint = uniform(new THREE.Color(params.wetTint.r, params.wetTint.g, params.wetTint.b));
+const uMirrorTexMat = uniform(new THREE.Matrix4());
+const uGIor = uniform(params.glassIor);
+const uGShift = uniform(params.glassShift);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  geometry
+// ═══════════════════════════════════════════════════════════════════ 
+
+function roundedBoxGeometry(w, h, d, r, seg = 10) {
+  r = Math.min(r, w * 0.48, h * 0.48, d * 0.48);
+  const g = new THREE.BoxGeometry(w, h, d, seg, seg, seg);
+  const pos = g.attributes.position;
+  const nor = g.attributes.normal;
+  const hw = w / 2 - r, hh = h / 2 - r, hd = d / 2 - r;
+  const v = new THREE.Vector3(), c = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    c.set(
+      Math.min(Math.max(v.x, -hw), hw),
+      Math.min(Math.max(v.y, -hh), hh),
+      Math.min(Math.max(v.z, -hd), hd)
+    );
+    v.sub(c);
+    if (v.lengthSq() > 1e-10) v.normalize();
+    else v.set(nor.getX(i), nor.getY(i), nor.getZ(i));
+    pos.setXYZ(i, c.x + v.x * r, c.y + v.y * r, c.z + v.z * r);
+    nor.setXYZ(i, v.x, v.y, v.z);
+  }
+  return g;
+}
+
+function roundedCylinderGeometry(R, H, r, radialSegs = 56, arcSegs = 7) {
+  const pts = [];
+  pts.push(new THREE.Vector2(0.001, -H / 2));
+  for (let i = 0; i <= arcSegs; i++) {
+    const a = (i / arcSegs) * Math.PI / 2;
+    pts.push(new THREE.Vector2(R - r + r * Math.sin(a), -H / 2 + r - r * Math.cos(a)));
+  }
+  for (let i = 0; i <= arcSegs; i++) {
+    const a = (i / arcSegs) * Math.PI / 2;
+    pts.push(new THREE.Vector2(R - r + r * Math.cos(a), H / 2 - r + r * Math.sin(a)));
+  }
+  pts.push(new THREE.Vector2(0.001, H / 2));
+  const g = new THREE.LatheGeometry(pts, radialSegs);
+  g.computeVertexNormals();
+  return g;
+}
+
+function roundedRingGeometry(rIn, rOut, halfH, cr, cornerSeg = 10, latheSeg = 120) {
+  const pts = [];
+  const arc = (cx, cy, a0, a1) => {
+    for (let i = 0; i <= cornerSeg; i++) {
+      const a = a0 + (a1 - a0) * (i / cornerSeg);
+      pts.push(new THREE.Vector2(cx + Math.cos(a) * cr, cy + Math.sin(a) * cr));
+    }
+  };
+  pts.push(new THREE.Vector2(rIn + cr, -halfH));
+  pts.push(new THREE.Vector2(rOut - cr, -halfH));
+  arc(rOut - cr, -halfH + cr, -Math.PI / 2, 0);
+  pts.push(new THREE.Vector2(rOut, halfH - cr));
+  arc(rOut - cr, halfH - cr, 0, Math.PI / 2);
+  pts.push(new THREE.Vector2(rIn + cr, halfH));
+  arc(rIn + cr, halfH - cr, Math.PI / 2, Math.PI);
+  pts.push(new THREE.Vector2(rIn, -halfH + cr));
+  arc(rIn + cr, -halfH + cr, Math.PI, Math.PI * 1.5);
+  pts.push(pts[0].clone());
+  const geo = new THREE.LatheGeometry(pts, latheSeg);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function makeDotNormalTexture() {
+  const size = 64;
+  const data = new Uint8Array(size * size * 4);
+  const R = 0.62;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const px = (x / (size - 1)) * 2 - 1;
+      const py = (y / (size - 1)) * 2 - 1;
+      const l = Math.hypot(px, py);
+      let nx = 0, ny = 0, nz = 1;
+      if (l < R) {
+        nx = -px / R; ny = -py / R; nz = 1.1;
+        const inv = 1 / Math.hypot(nx, ny, nz);
+        nx *= inv; ny *= inv; nz *= inv;
+      }
+      const o = (y * size + x) * 4;
+      data[o + 0] = Math.round((nx * 0.5 + 0.5) * 255);
+      data[o + 1] = Math.round((ny * 0.5 + 0.5) * 255);
+      data[o + 2] = Math.round((nz * 0.5 + 0.5) * 255);
+      data[o + 3] = 255;
+    }
+  }
+  const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.UnsignedByteType);
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  setup
+// ═══════════════════════════════════════════════════════════════════ 
+
+const canvas = document.getElementById('c');
+const hint = null;
+const badge = document.getElementById('badge');
+let hintHidden = false;
+
+const IS_MOBILE = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 1;
+const dpr = Math.min(window.devicePixelRatio || 1, IS_MOBILE ? 1.5 : 2);
+
+let renderer;
+try {
+  renderer = new THREE.WebGPURenderer({ canvas, antialias: true });
+  await renderer.init();
+} catch (e) {
+  console.error(e);
+  document.getElementById('err').style.display = 'grid';
+  throw e;
+}
+badge.textContent = renderer.backend.isWebGPUBackend ? 'WebGPU' : 'WebGL2 fallback';
+
+renderer.setPixelRatio(dpr);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFShadowMap;
+renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+
+const scene = new THREE.Scene();
+
+const sceneBox = new THREE.Box3(new THREE.Vector3(-2, 0, -2), new THREE.Vector3(2, 5, 2));
+
+const camera = new THREE.PerspectiveCamera(20, window.innerWidth / window.innerHeight, 6, 96);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  minimal orbit control(s)
+// ═══════════════════════════════════════════════════════════════════ 
+
+const MIN_CAM_Y = 10.0;
+const orbit = {
+  target: new THREE.Vector3(0, 0.9, 0),
+  theta: 0,
+  phi: 1.047,      // start: camY 15.0955, camZ 24.5656
+  radius: 28.372,
+};
+const _lightDirTmp = new THREE.Vector3();
+let lastNear = -1, lastFar = -1;
+
+let camPaneDirty = false;
+
+function setCameraFromSliders() {
+  const dx = params.camX - orbit.target.x;
+  const dy = params.camY - orbit.target.y;
+  const dz = params.camZ - orbit.target.z;
+  const r = Math.max(2, Math.hypot(dx, dy, dz));
+  orbit.radius = r;
+  orbit.phi = Math.acos(Math.min(1, Math.max(-1, dy / r)));
+  orbit.theta = Math.atan2(dx, dz);
+}
+
+function applyOrbit() {
+  // guarantee camera height >= MIN_CAM_Y regardless of input path
+  const minDy = MIN_CAM_Y - orbit.target.y;
+  if (orbit.radius < minDy + 0.001) orbit.radius = minDy + 0.001;
+  const phiMax = Math.acos(Math.min(1, minDy / orbit.radius));
+  if (orbit.phi > phiMax) orbit.phi = phiMax;
+  const sinPhi = Math.sin(orbit.phi);
+  camera.position.set(
+    orbit.target.x + orbit.radius * sinPhi * Math.sin(orbit.theta),
+    orbit.target.y + orbit.radius * Math.cos(orbit.phi),
+    orbit.target.z + orbit.radius * sinPhi * Math.cos(orbit.theta)
+  );
+  // reflect the live camera into the pane sliders (drag/pinch/wheel -> UI)
+  if (Math.abs(params.camX - camera.position.x) > 0.01 ||
+      Math.abs(params.camY - camera.position.y) > 0.01 ||
+      Math.abs(params.camZ - camera.position.z) > 0.01) {
+    params.camX = camera.position.x;
+    params.camY = camera.position.y;
+    params.camZ = camera.position.z;
+    camPaneDirty = true;
+  }
+  camera.lookAt(orbit.target);
+  camera.updateMatrixWorld(true);
+
+  // keep near/far snug so the normalized linear depth (SSAO/SSS) stays well scaled
+  const near = Math.max(0.5, orbit.radius - 6);
+  const far = orbit.radius + 8;
+  if (near !== lastNear || far !== lastFar) {
+    camera.near = near; camera.far = far;
+    camera.updateProjectionMatrix();
+    uCamNear.value = near; uCamFar.value = far;
+    lastNear = near; lastFar = far;
+  }
+
+  // light direction in view space
+  _lightDirTmp.copy(mainLight.position).normalize().transformDirection(camera.matrixWorldInverse);
+  uLightDirView.value.copy(_lightDirTmp);
+}
+
+function fitShadowCameraToBox(light, box) {
+  const direction = light.position.clone().normalize();
+  const m = new THREE.Matrix4().lookAt(direction, new THREE.Vector3(), new THREE.Vector3(0, 1, 0));
+  m.invert();
+  const vs = [
+    box.min.clone(),
+    new THREE.Vector3(box.min.x, box.min.y, box.max.z),
+    new THREE.Vector3(box.min.x, box.max.y, box.min.z),
+    new THREE.Vector3(box.max.x, box.min.y, box.min.z),
+    new THREE.Vector3(box.max.x, box.max.y, box.min.z),
+    box.max.clone(),
+    new THREE.Vector3(box.max.x, box.min.y, box.max.z),
+    new THREE.Vector3(box.min.x, box.max.y, box.max.z),
+  ].map(v => v.applyMatrix4(m));
+  const cam = light.shadow.camera;
+  cam.left = vs.reduce((a, v) => Math.min(a, v.x), Infinity);
+  cam.right = vs.reduce((a, v) => Math.max(a, v.x), -Infinity);
+  cam.bottom = vs.reduce((a, v) => Math.min(a, v.y), Infinity);
+  cam.top = vs.reduce((a, v) => Math.max(a, v.y), -Infinity);
+  const minZ = vs.reduce((a, v) => Math.min(a, v.z), Infinity);
+  const maxZ = vs.reduce((a, v) => Math.max(a, v.z), -Infinity);
+  cam.near = light.position.length() + minZ;
+  cam.far = cam.near - minZ + maxZ;
+}
+
+const shadowFitBox = new THREE.Box3();
+function refitShadow() {
+  const bx = params.playArea + 1, bz = params.playArea * 0.8 + 1;
+  shadowFitBox.min.set(-bx, 0, -bz);
+  shadowFitBox.max.set(bx, 7.5, bz);
+  fitShadowCameraToBox(mainLight, shadowFitBox);
+  mainLight.shadow.camera.updateProjectionMatrix();
+}
+
+const mainLight = new THREE.DirectionalLight(0xffffff, params.lightStrength * Math.PI);
+mainLight.castShadow = true;
+mainLight.shadow.mapSize.width = params.shadowMapSize;
+mainLight.shadow.mapSize.height = params.shadowMapSize;
+mainLight.shadow.bias = params.shadowBias;
+mainLight.shadow.normalBias = params.shadowNormalBias;
+mainLight.shadow.intensity = params.shadowIntensity;
+mainLight.shadow.radius = params.shadowSoftness;
+scene.add(mainLight);
+
+let glassLight = null; // created with the glass scene, synced by updateLight
+function updateLight() {
+  const az = THREE.MathUtils.degToRad(params.lightAzimuth);
+  const el = THREE.MathUtils.degToRad(params.lightElevation);
+  const R = 14.14;
+  mainLight.position.set(
+    R * Math.cos(el) * Math.sin(az),
+    R * Math.sin(el),
+    R * Math.cos(el) * Math.cos(az)
+  );
+  refitShadow();
+  if (glassLight) glassLight.position.copy(mainLight.position);
+}
+updateLight();
+
+const uLightDirView = uniform(new THREE.Vector3(0, 0, 1));
+const uCamNear = uniform(camera.near);
+const uCamFar = uniform(camera.far);
+applyOrbit();
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  render targets
+// ═══════════════════════════════════════════════════════════════════ 
+
+const viewportSize = new THREE.Vector2();
+function computeBufferSize() {
+  viewportSize.set(
+    Math.max(2, Math.floor(canvas.clientWidth * dpr)),
+    Math.max(2, Math.floor(canvas.clientHeight * dpr))
+  );
+}
+renderer.setSize(window.innerWidth, window.innerHeight, false);
+computeBufferSize();
+
+const mrtRT = new THREE.RenderTarget(viewportSize.x, viewportSize.y, {
+  count: 4,
+  minFilter: THREE.LinearFilter,
+  magFilter: THREE.LinearFilter,
+});
+
+mrtRT.textures[0].name = 'diffuseId';
+mrtRT.textures[1].name = 'depthL';
+mrtRT.textures[1].type = THREE.HalfFloatType;
+mrtRT.textures[2].name = 'normalSpec';
+mrtRT.textures[2].type = THREE.HalfFloatType;
+mrtRT.textures[3].name = 'albedo';
+
+let blurSize = viewportSize.clone().multiplyScalar(blurScale).floor();
+const sssBlurRTH = new THREE.RenderTarget(blurSize.x, blurSize.y, {});
+const sssBlurRTV = new THREE.RenderTarget(blurSize.x, blurSize.y, {});
+let ssaoSize = viewportSize.clone().multiplyScalar(ssaoScale).floor();
+const ssaoInternalRT = new THREE.RenderTarget(ssaoSize.x, ssaoSize.y, {});
+const ssaoRT = new THREE.RenderTarget(ssaoSize.x, ssaoSize.y, {});
+const compositeRT = new THREE.RenderTarget(viewportSize.x, viewportSize.y, {});
+// glass accumulation (rings refracting rings): ONE target with its own depth
+// (primed once per frame) + a color-only copy the rings sample from — no
+// shared depth attachments, no feedback loops
+const glassAccumRT = new THREE.RenderTarget(viewportSize.x, viewportSize.y, {});
+const glassBackdropRT = new THREE.RenderTarget(viewportSize.x, viewportSize.y, { depthBuffer: false });
+let mirrorSize = viewportSize.clone().multiplyScalar(0.5).floor();
+const mirrorRT = new THREE.RenderTarget(mirrorSize.x, mirrorSize.y, { type: THREE.HalfFloatType });
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  scene material(s) (TSL)
+// ═══════════════════════════════════════════════════════════════════ 
+
+const dotNormalMap = makeDotNormalTexture();
+
+// normalized linear view depth
+const normalizedLinearDepth = () =>
+  positionView.z.negate().sub(uCamNear).div(uCamFar.sub(uCamNear));
+
+// approximate shadow mask reconstructed from the lit lambert output
+function shadowMaskFrom(outColor, albedoNode, dotNL) {
+  const unshadowedLum = luminance(albedoNode).mul(uLightScale).mul(dotNL).max(1e-4);
+  const ratio = clamp(luminance(outColor).div(unshadowedLum), 0, 1);
+  return mix(float(1), ratio, smoothstep(0.01, 0.05, dotNL));
+}
+
+function cotangentFrame(N, p, coord) {
+  const dp1 = dFdx(p), dp2 = dFdy(p);
+  const duv1 = dFdx(coord), duv2 = dFdy(coord);
+  const dp2perp = cross(dp2, N);
+  const dp1perp = cross(N, dp1);
+  const T = dp2perp.mul(duv1.x).add(dp1perp.mul(duv2.x));
+  const B = dp2perp.mul(duv1.y).add(dp1perp.mul(duv2.y));
+  const invmax = float(1).div(max(dot(T, T), dot(B, B)).add(1e-8).sqrt());
+  return mat3(T.mul(invmax), B.mul(invmax), N);
+}
+
+function blinnPhongSpec(L, V, N, shininessNode) {
+  const H = normalize(L.add(V));
+  const dotNH = clamp(dot(N, H), 0, 1);
+  const D = pow(dotNH, shininessNode).mul(shininessNode.mul(0.5).add(1).div(Math.PI));
+  return D.mul(0.25);
+}
+
+
+const FLOOR_FIELD_N = 128;
+const FLOOR_FIELD_HALF = 8.5; // world half-extent the field covers
+const floorH = new Float32Array(FLOOR_FIELD_N * FLOOR_FIELD_N);
+const floorV = new Float32Array(FLOOR_FIELD_N * FLOOR_FIELD_N);
+const floorHeightTex = new THREE.DataTexture(floorH, FLOOR_FIELD_N, FLOOR_FIELD_N, THREE.RedFormat, THREE.FloatType);
+floorHeightTex.minFilter = THREE.LinearFilter;
+floorHeightTex.magFilter = THREE.LinearFilter;
+floorHeightTex.wrapS = THREE.ClampToEdgeWrapping;
+floorHeightTex.wrapT = THREE.ClampToEdgeWrapping;
+floorHeightTex.needsUpdate = true;
+
+let splashCount = 0;
+function dentFloorAt(x, z, amount) {
+  splashCount++;
+  const u = (x / FLOOR_FIELD_HALF) * 0.5 + 0.5;
+  const v = (z / FLOOR_FIELD_HALF) * 0.5 + 0.5;
+  if (u <= 0 || u >= 1 || v <= 0 || v >= 1) return;
+  const cx = Math.round(u * (FLOOR_FIELD_N - 1));
+  const cy = Math.round(v * (FLOOR_FIELD_N - 1));
+  for (let oy = -1; oy <= 1; oy++) {
+    for (let ox = -1; ox <= 1; ox++) {
+      const X = cx + ox, Y = cy + oy;
+      if (X < 1 || X >= FLOOR_FIELD_N - 1 || Y < 1 || Y >= FLOOR_FIELD_N - 1) continue;
+      const w = (ox === 0 && oy === 0) ? 0.4 : ((ox === 0 || oy === 0) ? 0.15 : 0.075);
+      floorV[Y * FLOOR_FIELD_N + X] -= amount * w;
+    }
+  }
+}
+
+function stepFloorField() {
+  const N = FLOOR_FIELD_N;
+  if (!params.boilFloor) {
+    // fade any remaining dents out quickly when disabled
+    let any = false;
+    for (let i = 0; i < floorH.length; i++) {
+      floorH[i] *= 0.9; floorV[i] = 0;
+      if (Math.abs(floorH[i]) > 1e-4) any = true;
+    }
+    if (any) floorHeightTex.needsUpdate = true;
+    return;
+  }
+  const wave = params.boilWave, spring = params.boilSpring, damp = params.boilDamp;
+  const maxD = params.boilMaxDepth;
+  for (let y = 1; y < N - 1; y++) {
+    const row = y * N;
+    for (let x = 1; x < N - 1; x++) {
+      const i = row + x;
+      const lap = (floorH[i - 1] + floorH[i + 1] + floorH[i - N] + floorH[i + N]) * 0.25 - floorH[i];
+      floorV[i] += lap * wave - floorH[i] * spring;
+      floorV[i] *= damp;
+      let h = floorH[i] + floorV[i];
+      if (h < -maxD) h = -maxD;
+      else if (h > maxD * 0.5) h = maxD * 0.5;
+      floorH[i] = h;
+    }
+  }
+  floorHeightTex.needsUpdate = true;
+}
+
+const vignetteBase = vec3(length(uv().mul(2).sub(1)).mul(0.4).add(0.6)).mul(uFloorBright);
+
+function buildBrickMaterial(c, id) {
+  const mat = new THREE.MeshLambertNodeMaterial();
+  mat.color = new THREE.Color(c.r, c.g, c.b);
+  mat.customId = id;
+  mat.customIsBrick = 1;
+  mat.customIsGlass = 0;
+  return mat;
+}
+
+function buildFloorMaterial() {
+  const mat = new THREE.MeshLambertNodeMaterial();
+  mat.colorNode = vec4(vignetteBase, 1);
+  mat.color = new THREE.Color(0.12, 0.12, 0.12);
+  mat.customId = 0;
+  mat.customIsBrick = 0;
+  mat.customIsGlass = 0;
+  // boiling floor: displace along local up by the heightfield (plane local:
+  // x -> world x, -y -> world z, z -> world y), normals from the gradient
+  const fieldUv = vec2(
+    positionLocal.x.div(FLOOR_FIELD_HALF * 2).add(0.5),
+    positionLocal.y.negate().div(FLOOR_FIELD_HALF * 2).add(0.5)
+  );
+  const hN = texture(floorHeightTex, fieldUv).r;
+  mat.positionNode = positionLocal.add(vec3(0, 0, 1).mul(hN));
+  const e = float(1.5 / FLOOR_FIELD_N);
+  const hx = texture(floorHeightTex, fieldUv.add(vec2(e, 0))).r
+    .sub(texture(floorHeightTex, fieldUv.sub(vec2(e, 0))).r);
+  const hy = texture(floorHeightTex, fieldUv.add(vec2(0, e))).r
+    .sub(texture(floorHeightTex, fieldUv.sub(vec2(0, e))).r);
+  const nLocal = normalize(vec3(hx.negate(), hy, e.mul(FLOOR_FIELD_HALF * 4)));
+  mat.normalNode = transformNormalToView(nLocal);
+  return mat;
+}
+
+const glassMats = [];
+// swappable backdrop source: during the accumulating glass pass, each ring
+// samples the image containing the scene + all rings BEHIND it
+const glassBackdropTex = texture(compositeRT.texture);
+function buildGlassMaterial() {
+  const mat = new THREE.MeshPhysicalNodeMaterial({
+    color: 0xffffff,
+    roughness: params.glassRoughness,
+    metalness: 0,
+    ior: params.glassIor,
+    transparent: true,
+    // golden-stream shell recipe: thin-film iridescence + wet clearcoat
+    iridescence: params.glassIrid,
+    iridescenceIOR: params.glassIridIor,
+    iridescenceThicknessRange: [140, 380],
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.10,
+    specularIntensity: 1.0,
+    envMapIntensity: params.glassEnv,
+  });
+  // the ring renders forward AFTER the composite; physical transmission has
+  // nothing to capture there, so backdropNode supplies the transmitted image:
+  // the composited scene sampled through one refraction offset
+  const rr = refract(positionViewDirection.negate(), normalView, float(1).div(uGIor));
+  mat.backdropNode = glassBackdropTex.sample(screenUV.add(rr.xy.mul(uGShift)));
+  glassMats.push(mat);
+  return mat;
+}
+
+function buildSceneMRT() {
+  const isBrick = materialReference('customIsBrick', 'float');
+  const id = materialReference('customId', 'float');
+
+  const N = normalView; // includes material normalNode (floor dents); plain geometry normal elsewhere
+  const L = uLightDirView;
+  const V = positionViewDirection;
+  const dotNL = clamp(dot(N, L), 0, 1);
+
+  // base surface color: vignette for the floor, material color for bricks
+  const base = mix(vignetteBase, materialColor, isBrick);
+
+  // diffuse: lambert -> deep shadow -> ambient remix. The shadow factor is
+  // reconstructed PER CHANNEL so colored/HDR light survives the remix.
+  const mask = shadowMaskFrom(vec3(output), base, dotNL);
+  const unshadowed = base.mul(uLightScale).mul(dotNL);
+  const colorFactorRaw = clamp(vec3(output).div(unshadowed.max(vec3(1e-4))), 0.0, 6.0);
+  const colorFactor = mix(vec3(1), colorFactorRaw, smoothstep(0.01, 0.05, dotNL));
+  // penumbra feather: raise shadow DENSITY (1 - factor) to a power. Core
+  // density ~1 is unmoved; penumbra density ~0 collapses toward zero, so the
+  // blurred edge dissolves to full transparency instead of a linear gradient.
+  // HDR excess (factor > 1) passes through untouched.
+  const dens = clamp(vec3(1).sub(colorFactor), 0.0, 1.0);
+  const colorFactorF = colorFactor.add(dens.sub(pow(dens, vec3(uShadowFeather))));
+  const shadowPower = mix(uShadowPowFloor, uShadowPowBrick, isBrick);
+  const deep = unshadowed.mul(
+    vec3(1).sub(vec3(1).sub(colorFactorF).mul(shadowPower))
+  );
+  const diffuseLit = deep.mul(mix(float(1), uDirectMix, isBrick))
+    .add(materialColor.mul(uAmbientMix).mul(isBrick));
+
+  // wet-floor planar reflection (ported from the golden-stream demo):
+  // mirror lookup via the classic reflection texture matrix, distorted by
+  // drifting noise (puddle ripples) and scattered by high-frequency jitter
+  // (blur), weighted by fresnel and faded toward the plane's edge.
+  const mirClip = uMirrorTexMat.mul(vec4(positionWorld, 1.0));
+  const rippleUV = positionWorld.xz.mul(uWetScale);
+  const n1 = mx_noise_float(vec3(rippleUV, time.mul(uWetSpeed)));
+  const n2 = mx_noise_float(vec3(rippleUV.yx.mul(1.7), time.mul(uWetSpeed).add(11.0)));
+  const jit1 = mx_noise_float(vec3(positionWorld.xz.mul(9.0), time.mul(0.5)));
+  const jit2 = mx_noise_float(vec3(positionWorld.zx.mul(9.0).add(31.7), time.mul(0.5)));
+  const mirUV = mirClip.xy.div(mirClip.w)
+    .add(vec2(n1, n2).mul(uWetDistort.mul(0.06)))
+    .add(vec2(jit1, jit2).mul(uWetBlur.mul(0.045)));
+  const mirCol = texture(mirrorRT.texture, mirUV).rgb;
+  const facingF = abs(dot(normalView, positionViewDirection));
+  const wetFres = pow(float(1).sub(facingF), uWetFresnel);
+  const radial = smoothstep(1.0, 0.25, length(uv().mul(2).sub(1)));
+  const wet = clamp(wetFres.mul(uWetAmount).mul(radial), 0, 1)
+    .mul(float(1).sub(isBrick));
+  const diffuse = mix(diffuseLit, mirCol.mul(uWetTint), wet);
+
+  // rest-space triplanar dots + specular (gated by isBrick)
+  const rp = attribute('aRestPos', 'vec3');
+  const rn = attribute('aRestNrm', 'vec3');
+  const aN = abs(normalize(rn));
+  const zDom = aN.z.greaterThanEqual(aN.x).and(aN.z.greaterThanEqual(aN.y));
+  const xDom = aN.x.greaterThanEqual(aN.y);
+  const coord = select(zDom, rp.xy,
+                select(xDom, rp.zy, rp.xz))
+                .mul(uDotDensity);
+
+  const dotUv = fract(coord);
+  const dots = float(1).sub(
+    float(1).sub(smoothstep(uDotThickness, uDotThickness.add(0.05), length(dotUv.mul(2).sub(1)))).mul(2)
+  );
+  const dotN = normalize(texture(dotNormalMap, dotUv).xyz.mul(2).sub(1));
+  const tbn = cotangentFrame(N, positionView, coord);
+  const dotNormalView = tbn.mul(dotN);
+
+  const nr = mx_noise_float(vec3(coord.mul(3.8), 1.0)).mul(0.5).add(0.5);
+  const ng = mx_noise_float(vec3(coord.mul(3.8), 91.0)).mul(0.5).add(0.5);
+  const nNoise = vec3(nr, ng, 0.5);
+
+  const fresnel = float(1).sub(clamp(dot(V, N), 0, 1));
+  const specularNormal = normalize(N.add(nNoise.mul(uSpecNoiseAmt)).add(dotNormalView.mul(uDotNormalAmt).mul(uDotsOn)));
+  const spec = blinnPhongSpec(L, V, specularNormal, uShininess)
+    .mul(mask.mul(0.8).add(0.2))
+    .mul(uSpecStrength)
+    .add(fresnel.mul(uFresnelAmt));
+
+  return mrt({
+    diffuseId: vec4(diffuse, id.div(255)),
+    depthL: vec4(normalizedLinearDepth()),
+    normalSpec: vec4(N, spec.mul(mix(float(1), dots, uDotsOn)).mul(isBrick)),
+    albedo: vec4(mix(vec3(1), materialColor, isBrick), 1),
+  });
+}
+const sceneMRT = buildSceneMRT();
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  scene content(s) (TSL)
+// ═══════════════════════════════════════════════════════════════════ 
+
+const floorMesh = new THREE.Mesh(new THREE.PlaneGeometry(60, 60, 256, 256), buildFloorMaterial());
+floorMesh.rotation.x = -Math.PI / 2;
+floorMesh.receiveShadow = true;
+// the shared MRT graph reads aRestPos/aRestNrm on every draw; give the floor
+// the attributes too (unused there — dots are isBrick-gated) to avoid warnings
+floorMesh.geometry.setAttribute('aRestPos', new THREE.BufferAttribute(floorMesh.geometry.attributes.position.array.slice(), 3));
+floorMesh.geometry.setAttribute('aRestNrm', new THREE.BufferAttribute(floorMesh.geometry.attributes.normal.array.slice(), 3));
+scene.add(floorMesh);
+
+const bricksContainer = new THREE.Group();
+scene.add(bricksContainer);
+
+// the ring lives in its own forward scene, drawn on top of the composite
+const glassScene = new THREE.Scene();
+glassLight = new THREE.DirectionalLight(0xffffff, 1.2); // example uses key 1.2; IBL carries the rest
+glassLight.position.copy(mainLight.position);
+glassScene.add(glassLight);
+
+// PMREM studio environment for the glass, standing in for addons' RoomEnvironment
+// (not importable from cdnjs): a gray room with bright emissive "window" boxes.
+// Their rectangular hotspots are what give physical glass its crisp reflections.
+function buildRoomEnvTexture() {
+  const env = new THREE.Scene();
+  const lightBox = (w, h, d, x, y, z, lum, warm = 0) => {
+    const c = new THREE.Color().setRGB(lum * (1 + warm * 0.15), lum, lum * (1 - warm * 0.15));
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshBasicMaterial({ color: c }));
+    m.position.set(x, y, z);
+    env.add(m);
+  };
+  const room = new THREE.Mesh(
+    new THREE.BoxGeometry(14, 14, 14),
+    new THREE.MeshBasicMaterial({ color: new THREE.Color().setRGB(0.32, 0.33, 0.35), side: THREE.BackSide })
+  );
+  env.add(room);
+  lightBox(4.5, 0.1, 4.5,   0.0,  6.9,  0.0, 6.5);       // ceiling softbox
+  lightBox(0.1, 3.0, 2.0,  -6.9,  1.6,  0.5, 2.6,  1);   // warm left window
+  lightBox(0.1, 2.2, 3.2,   6.9,  0.4, -1.2, 1.7, -1);   // cool right window
+  lightBox(3.0, 1.3, 0.1,   1.2,  2.4, -6.9, 3.1);       // back strip light
+  lightBox(2.5, 0.1, 2.5,  -2.0, -6.9,  2.0, 0.9);       // floor bounce card
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const tex = pmrem.fromScene(env, 0.04).texture; // same sigma as the example
+  pmrem.dispose();
+  env.traverse(o => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); } });
+  return tex;
+}
+glassScene.environment = buildRoomEnvTexture();
+glassScene.environmentIntensity = params.glassEnv;
+
+const ringMeshes = [];
+const shadowProxies = [];
+
+const depthPrimeMat = new THREE.MeshBasicNodeMaterial();
+depthPrimeMat.colorNode = vec4(0, 0, 0, 1);
+depthPrimeMat.colorWrite = false;
+
+const BRICK_COUNT = 100;
+const brickDefs = [];
+{
+  const cols = 12, rows = Math.ceil(BRICK_COUNT / cols);
+  const spanX = 16.5, spanZ = 12.8;
+  for (let n = 0; n < BRICK_COUNT; n++) {
+    const gx = n % cols, gy = (n / cols) | 0;
+    const px = -spanX / 2 + (gx + 0.5 + (Math.random() - 0.5) * 0.6) * (spanX / cols);
+    const pz = -spanZ / 2 + ((gy % 8) + 0.5 + (Math.random() - 0.5) * 0.6) * (spanZ / 8);
+    const py = 1.2 + Math.random() * 10.5;
+    const s = 1.55 + Math.random() * 0.6;
+    const color = (Math.random() * 6) | 0;
+    const rot = [0, Math.random() * Math.PI * 2, 0];
+    brickDefs.push(Math.random() < 0.3
+      ? { type: 'plus', bar: [s * 1.35, s * 0.5, s * 0.5], color, pos: [px, py, pz], rot }
+      : { type: 'box', size: [s, s, s], color, pos: [px, py, pz], rot });
+  }
+}
+brickDefs.push({ type: 'ring', rIn: 0.84, rOut: 1.5, halfH: 0.66, cr: 0.26,
+  color: 0, pos: [-3.4, 2.6, -1.2], rot: [1.25, 0, 0.25] });
+// the two extra rings are randomized each load — but the FIRST is always a
+// proper long tube (halfH 1.5-2.1), while the second stays a shortish band
+// (0.45-1.25). With the fixed anchor ring at 0.66, exactly one ring per
+// load is clearly longer than the other two.
+for (const spawn of [
+  { pos: [3.6, 2.2, 2.0], rot: [0.35, 0.6, 1.1], long: true },
+  { pos: [0.8, 3.8, -3.0], rot: [1.45, 0.2, -0.5], long: false },
+]) {
+  const rIn = 0.5 + Math.random() * 0.35;
+  const wall = 0.4 + Math.random() * 0.25;
+  const halfH = spawn.long
+    ? 1.5 + Math.random() * 0.6
+    : 0.45 + Math.random() * 0.8;
+  brickDefs.push({
+    type: 'ring', rIn, rOut: rIn + wall,
+    halfH, cr: Math.min(0.26, halfH * 0.45, wall * 0.45),
+    color: 0, pos: spawn.pos, rot: spawn.rot,
+  });
+}
+const NUM_RINGS = 3;
+brickDefs.forEach(d => {
+  d.pos = d.pos.map(v => v * GEO_SCALE);
+  if (d.size) d.size = d.size.map(v => v * GEO_SCALE);
+  if (d.bar) d.bar = d.bar.map(v => v * GEO_SCALE);
+  if (d.R) { d.R *= GEO_SCALE; d.H *= GEO_SCALE; }
+  if (d.rIn) { d.rIn *= GEO_SCALE; d.rOut *= GEO_SCALE; d.halfH *= GEO_SCALE; d.cr *= GEO_SCALE; }
+  // bricks at half size — the ring keeps its scale
+  const BRICK_SCALE = 0.5;
+  if (d.type !== 'ring') {
+    if (d.size) d.size = d.size.map(v => v * BRICK_SCALE);
+    if (d.bar) d.bar = d.bar.map(v => v * BRICK_SCALE);
+    if (d.R) { d.R *= BRICK_SCALE; d.H *= BRICK_SCALE; }
+  }
+});
+
+const cornerR = 0.15 * GEO_SCALE; // softly rounded wax (~16% of a half-size cube's width)
+const brickMeshes = [];
+const materialsByColor = albedoColors.map(() => []);
+
+function addRestAttributes(g) {
+  g.setAttribute('aRestPos', new THREE.BufferAttribute(g.attributes.position.array.slice(), 3));
+  g.setAttribute('aRestNrm', new THREE.BufferAttribute(g.attributes.normal.array.slice(), 3));
+  // deformed geometry: keep raycast/culling valid with a generous static sphere
+  g.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 1.5, 0), 40);
+}
+
+brickDefs.forEach((def, ndx) => {
+  let obj;
+  if (def.type === 'ring') {
+    obj = new THREE.Mesh(roundedRingGeometry(def.rIn, def.rOut, def.halfH, def.cr), buildGlassMaterial());
+    ringMeshes.push(obj);
+  } else {
+    const material = buildBrickMaterial(albedoColors[def.color % albedoColors.length], ndx + 1);
+    materialsByColor[def.color % albedoColors.length].push(material);
+    if (def.type === 'cylinder') {
+      obj = new THREE.Mesh(roundedCylinderGeometry(def.R, def.H, 0.3 * GEO_SCALE), material);
+    } else if (def.type === 'plus') {
+      obj = new THREE.Group();
+      const [Lb, T, D] = def.bar;
+      obj.add(new THREE.Mesh(roundedBoxGeometry(Lb, T, D, cornerR, 4), material));
+      obj.add(new THREE.Mesh(roundedBoxGeometry(T, Lb, D, cornerR, 4), material));
+    } else {
+      obj = new THREE.Mesh(roundedBoxGeometry(...def.size, cornerR, 5), material);
+    }
+  }
+  // NOTE: no transform on the object — the initial pose is baked into the
+  // particle positions; the geometry lives in WORLD space and deforms there.
+  obj.userData.def = def;
+  const meshList = [];
+  obj.traverse(o => {
+    if (o.isMesh) {
+      o.castShadow = true; o.receiveShadow = true;
+      o.frustumCulled = false;
+      addRestAttributes(o.geometry);
+      meshList.push(o);
+    }
+  });
+  obj.userData.meshList = meshList;
+  if (def.type === 'ring') {
+    glassScene.add(obj); // forward overlay, not part of the MRT scene
+    // color/depth-invisible proxy sharing the SAME deforming geometry keeps
+    // the ring casting its shadow into the main scene
+    const proxyMat = new THREE.MeshBasicNodeMaterial();
+    proxyMat.colorWrite = false;
+    proxyMat.depthWrite = false;
+    proxyMat.customId = 0; proxyMat.customIsBrick = 0; proxyMat.customIsGlass = 0;
+    const proxy = new THREE.Mesh(obj.children.length ? obj.children[0].geometry : obj.geometry, proxyMat);
+    proxy.castShadow = true;
+    proxy.frustumCulled = false;
+    scene.add(proxy);
+    shadowProxies.push(proxy);
+  } else {
+    bricksContainer.add(obj);
+  }
+  brickMeshes.push(obj);
+});
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  postpro (TSL)
+// ═══════════════════════════════════════════════════════════════════ 
+
+const texDiffuseId = mrtRT.textures[0];
+const texDepth = mrtRT.textures[1];
+const texNormalSpec = mrtRT.textures[2];
+const texAlbedo = mrtRT.textures[3];
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  SSS separable blur (4 chained passes)
+// ═══════════════════════════════════════════════════════════════════ 
+
+function makeSSSBlurMaterial(inputTexture, direction, resolutionV2) {
+  const uRes = uniform(resolutionV2.clone());
+  const uDir = uniform(new THREE.Vector2(direction[0], direction[1]));
+  const uFBOScale = uniform(blurScale);
+
+  const mat = new THREE.MeshBasicNodeMaterial();
+  mat.colorNode = Fn(() => {
+    const kernelSize = 4;
+    const texelSize = vec2(1).div(uRes);
+    const fSigma = float(kernelSize);
+    const gauss = (x) => float(0.15915494).div(fSigma).mul(exp(x.mul(x).negate().div(fSigma.mul(2))));
+
+    const cSample = texture(inputTexture, uv());
+    const cDiffuse = cSample.rgb.toVar();
+    const cId = cSample.w.mul(255).toVar();
+    const cDepth = texture(texDepth, uv()).r.toVar();
+    const cNormal = texture(texNormalSpec, uv()).xyz.toVar();
+    const scale = uSSSScale.mul(uFBOScale);
+
+    const kernelSample = (uvNode, w) => {
+      const dSample = texture(inputTexture, uvNode);
+      const res = dSample.rgb;
+      const ns = texture(texNormalSpec, uvNode);
+      const id = dSample.w.mul(255);
+      const depth = texture(texDepth, uvNode).r;
+      const n = length(cNormal.sub(ns.xyz));
+      const s = min(cDepth.sub(depth).abs().mul(uSSSDepthFactor).mul(n.add(1)), 1.0);
+      const t = length(res.sub(cDiffuse)).mul(w).mul(0.7);
+      const modulated = mix(res.mul(uSSSLumFactor.add(t)), cDiffuse, s);
+      const sameId = id.round().sub(cId.round()).abs().lessThan(0.5);
+      return select(sameId, modulated, cDiffuse);
+    };
+
+    const w0 = gauss(float(0));
+    const diffuseSum = cDiffuse.mul(w0).toVar();
+    const weightSum = w0.toVar();
+
+    Loop({ start: int(1), end: int(kernelSize), type: 'int', condition: '<' }, ({ i }) => {
+      const x = float(i);
+      const w = gauss(x);
+      const uvOffset = uDir.mul(texelSize).mul(x).mul(scale);
+      diffuseSum.addAssign(kernelSample(uv().add(uvOffset), w).mul(w));
+      diffuseSum.addAssign(kernelSample(uv().sub(uvOffset), w).mul(w));
+      weightSum.addAssign(w.mul(2));
+    });
+
+    const result = vec4(diffuseSum.div(weightSum), cSample.w);
+    const isBg = cId.round().lessThan(0.5);
+    return select(isBg, vec4(0), result);
+  })();
+  return { mat, uRes, uDir };
+}
+
+// pass 1 intentionally keeps full-res resolution like the original
+const sssH1 = makeSSSBlurMaterial(texDiffuseId,        [3, 0], viewportSize);
+const sssV1 = makeSSSBlurMaterial(sssBlurRTH.texture,  [0, 3], blurSize);
+const sssH2 = makeSSSBlurMaterial(sssBlurRTV.texture,  [1, 0], blurSize);
+const sssV2 = makeSSSBlurMaterial(sssBlurRTH.texture,  [0, 1], blurSize);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  SSAO
+// ═══════════════════════════════════════════════════════════════════ 
+
+function generateSampleKernel(kernelSize) {
+  const kernel = [];
+  for (let i = 0; i < kernelSize; i++) {
+    const sample = new THREE.Vector3(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random());
+    sample.normalize();
+    let scale = i / kernelSize;
+    scale = THREE.MathUtils.lerp(0.1, 1, scale * scale);
+    sample.multiplyScalar(scale);
+    kernel.push(sample);
+  }
+  return kernel;
+}
+function generateNoiseTexture() {
+  const w = 4, h = 4;
+  const data = new Float32Array(w * h * 4);
+  for (let i = 0; i < w * h; i++) data[i * 4] = Math.random() * 2 - 1;
+  const tex = new THREE.DataTexture(data, w, h, THREE.RGBAFormat, THREE.FloatType);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+const KERNEL_SIZE = 32;
+const uKernel = uniformArray(generateSampleKernel(KERNEL_SIZE));
+const ssaoNoiseTex = generateNoiseTexture();
+const uSSAORes = uniform(ssaoSize.clone());
+const uProj = uniform(camera.projectionMatrix);
+const uProjInv = uniform(camera.projectionMatrixInverse);
+const uCamWorld = uniform(camera.matrixWorld);
+
+const perspectiveDepthToViewZ = (d, n, f) => n.mul(f).div(f.sub(n).mul(d).sub(f));
+const viewZToOrthographicDepth = (z, n, f) => z.add(n).div(n.sub(f));
+
+const ssaoMaterial = new THREE.MeshBasicNodeMaterial();
+ssaoMaterial.colorNode = Fn(() => {
+  const depth = texture(texDepth, uv()).x.toVar();
+  const viewZ = perspectiveDepthToViewZ(depth, uCamNear, uCamFar).toVar();
+
+  // P[2][3]*viewZ + P[3][3] without matrix element access
+  const clipW = uProj.mul(vec4(0, 0, viewZ, 1)).w;
+  const clipPosition = vec4(vec3(uv(), depth).sub(0.5).mul(2), 1).mul(clipW);
+  const viewPosition = uProjInv.mul(clipPosition).xyz.toVar();
+
+  const viewNormal = texture(texNormalSpec, uv()).xyz.toVar();
+
+  const noiseScale = uSSAORes.div(4);
+  const random = vec3(texture(ssaoNoiseTex, uv().mul(noiseScale)).r).toVar();
+
+  const tangent = normalize(random.sub(viewNormal.mul(dot(random, viewNormal))));
+  const bitangent = cross(viewNormal, tangent);
+  const kernelMatrix = mat3(tangent, bitangent, viewNormal);
+
+  const occlusion = float(0).toVar();
+
+  Loop({ start: int(0), end: int(KERNEL_SIZE), type: 'int', condition: '<' }, ({ i }) => {
+    const sampleVector = kernelMatrix.mul(uKernel.element(i));
+    const samplePoint = viewPosition.add(sampleVector.mul(uKernelRadius));
+    const spNDC = uProj.mul(vec4(samplePoint, 1)).toVar();
+    spNDC.divAssign(spNDC.w);
+    const spUv = spNDC.xy.mul(0.5).add(0.5);
+
+    const storedDepth = texture(texDepth, spUv).x;
+    const realViewZ = perspectiveDepthToViewZ(storedDepth, uCamNear, uCamFar);
+    const realDepth = viewZToOrthographicDepth(realViewZ, uCamNear, uCamFar);
+    const sampleDepth = viewZToOrthographicDepth(samplePoint.z, uCamNear, uCamFar);
+    const delta = sampleDepth.sub(realDepth);
+
+    const occluded = delta.greaterThan(uMinDistance).and(delta.lessThan(uMaxDistance));
+    occlusion.addAssign(select(occluded, float(1), float(0)));
+  });
+
+  const ao = float(1).sub(clamp(occlusion.div(KERNEL_SIZE), 0, 1));
+  return vec4(vec3(ao), 1);
+})();
+
+const uSSAOBlurRes = uniform(ssaoSize.clone());
+const ssaoBlurMaterial = new THREE.MeshBasicNodeMaterial();
+ssaoBlurMaterial.colorNode = Fn(() => {
+  const texelSize = vec2(1).div(uSSAOBlurRes);
+  const result = float(0).toVar();
+  Loop(
+    { start: int(-2), end: int(2), type: 'int', condition: '<=' },
+    { start: int(-2), end: int(2), type: 'int', condition: '<=' },
+    ({ i, j }) => {
+      const offset = vec2(float(i), float(j)).mul(texelSize);
+      result.addAssign(texture(ssaoInternalRT.texture, uv().add(offset)).r);
+    }
+  );
+  return vec4(vec3(result.div(25)), 1);
+})();
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  composite
+// ═══════════════════════════════════════════════════════════════════ 
+
+const rgb2hsv = (rgb) => {
+  const K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+  const p = mix(vec4(rgb.bg, K.wz), vec4(rgb.gb, K.xy), step(rgb.b, rgb.g)).toVar();
+  const q = mix(vec4(p.xyw, rgb.r), vec4(rgb.r, p.yzx), step(p.x, rgb.r)).toVar();
+  const d = q.x.sub(min(q.w, q.y));
+  const e = 1.0e-10;
+  return vec3(
+    abs(q.z.add(q.w.sub(q.y).div(d.mul(6).add(e)))),
+    d.div(q.x.add(e)),
+    q.x
+  );
+};
+const hsv2rgb = (hsv) => {
+  const rgb = clamp(abs(hsv.x.mul(6).add(vec3(0, 4, 2)).mod(6).sub(3)).sub(1), 0, 1);
+  return hsv.z.mul(mix(vec3(1), rgb, hsv.y));
+};
+
+const compositeMaterial = new THREE.MeshBasicNodeMaterial();
+compositeMaterial.colorNode = Fn(() => {
+  const diffuseId = texture(texDiffuseId, uv());
+  const normalSpecular = texture(texNormalSpec, uv());
+  const albedoIn = texture(texAlbedo, uv()).rgb;
+  const diffuse = diffuseId.rgb;
+  const specular = normalSpecular.w;
+  const sss = texture(sssBlurRTV.texture, uv()).toVar();
+  const ssao = texture(ssaoRT.texture, uv());
+
+  const hsv = rgb2hsv(albedoIn).toVar();
+  hsv.x.subAssign(uHueShift);
+  hsv.z.assign(max(uTintVMin, hsv.z));
+  const albedoTint = hsv2rgb(hsv);
+  const sssTinted = min(vec3(1), sss.rgb.mul(albedoTint));
+
+  const aoFactor = mix(float(1), ssao.r, uSSAOStrength);
+  const color = max(diffuse, sssTinted)      // blendLighten
+    .add(specular)
+    .mul(aoFactor)
+    .mul(uExposure)
+    .toVar();
+  const gray = vec3(dot(vec3(.3, .59, .11), color));
+  const graded = mix(color, gray, uDesat);
+
+  // background gradient (ported from the golden-stream backgroundNode):
+  // radial two-colour base + soft pool + faint halo. Drawn wherever the
+  // depth attachment's alpha says no geometry covered the pixel.
+  // geometry writes unit normals; the clear colour's length is ~0.19 —
+  // a length test is immune to any backend alpha-channel weirdness
+  const covered = step(0.5, length(normalSpecular.xyz));
+  const pC = uv().sub(0.5).mul(vec2(uAspect, 1.0));
+  const dC = length(pC);
+  const bgBase = mix(uBgInner, uBgOuter, smoothstep(0.02, 0.85, dC));
+  const pool = smoothstep(0.62, 0.0,
+    length(pC.mul(vec2(0.75, 1.45)).sub(vec2(0.0, -0.16)))).mul(uBgGlow);
+  const halo = smoothstep(0.14, 0.0, abs(dC.sub(0.47))).mul(uBgGlow.mul(0.3));
+  // grade the background EXACTLY like the scene (exposure + desaturate) —
+  // otherwise the floor->bg fade blends two different tonal pipelines and
+  // shows as a seam of mismatched color
+  const bgRaw = bgBase.add(pool).add(halo);
+  const bgExp = bgRaw.mul(uExposure);
+  const bg = mix(bgExp, vec3(dot(vec3(.3, .59, .11), bgExp)), uDesat);
+
+  // seamless horizon: reconstruct this pixel's WORLD position from the depth
+  // buffer (same math the SSAO pass uses) and dissolve floor pixels into the
+  // background gradient with distance. Bricks (id >= 1) stay fully solid.
+  // texDepth stores NORMALIZED LINEAR depth — invert that encoding directly.
+  // (The previous perspectiveDepthToViewZ path assumed a projective z-buffer
+  // value and produced garbage world positions: the fade never engaged.)
+  const depthN = texture(texDepth, uv()).x;
+  const viewZc = uCamNear.add(depthN.mul(uCamFar.sub(uCamNear))).negate();
+  // WebGPU render targets sample V-down: ndc.y = 1 - 2*uv.y
+  const ndcX = uv().x.mul(2).sub(1);
+  const ndcY = float(1).sub(uv().y.mul(2));
+  const p00 = uProj.mul(vec4(1, 0, 0, 0)).x;
+  const p11 = uProj.mul(vec4(0, 1, 0, 0)).y;
+  const viewPos = vec3(
+    ndcX.mul(viewZc.negate()).div(p00),
+    ndcY.mul(viewZc.negate()).div(p11),
+    viewZc
+  );
+  const worldPos = uCamWorld.mul(vec4(viewPos, 1)).xyz;
+  const distXZ = length(worldPos.xz);
+  const fadeFloor = float(1).sub(smoothstep(uFloorFadeStart, uFloorFadeEnd, distXZ));
+  const idc = diffuseId.a.mul(255);
+  const fadeW = mix(fadeFloor, float(1), step(0.5, idc));
+  return vec4(mix(bg, graded, covered.mul(fadeW)), 1);
+})();
+
+const quadSSSH1 = new THREE.QuadMesh(sssH1.mat);
+const quadSSSV1 = new THREE.QuadMesh(sssV1.mat);
+const quadSSSH2 = new THREE.QuadMesh(sssH2.mat);
+const quadSSSV2 = new THREE.QuadMesh(sssV2.mat);
+const quadSSAO = new THREE.QuadMesh(ssaoMaterial);
+const quadSSAOBlur = new THREE.QuadMesh(ssaoBlurMaterial);
+const quadComposite = new THREE.QuadMesh(compositeMaterial);
+
+const blitMaterial = new THREE.MeshBasicNodeMaterial();
+const blitSourceTex = texture(compositeRT.texture);
+blitMaterial.colorNode = blitSourceTex.sample(uv());
+blitMaterial.depthWrite = false;
+blitMaterial.depthTest = false;
+const quadBlit = new THREE.QuadMesh(blitMaterial);
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  soft-body PBD
+// ═══════════════════════════════════════════════════════════════════ 
+
+/* 
+   Real vertex-level softness. Every brick is a particle lattice simulated
+   with XPBD: distance constraints give local structure, a shape-matching
+   constraint (Mueller's meshless deformations, robust warm-started rotation
+   extraction) gives global form memory, particle-sphere collisions between
+   bodies make contacts dent and mushroom exactly where they touch, and box
+   constraints handle floor/walls. Render meshes are skinned to the lattice
+   with trilinear weights; normals are recomputed per frame. */
+
+
+const softBodies = [];
+let ringBody = null;
+const boundingBox = new THREE.Box3();
+let lastPlayArea = -1;
+function updateBounds() {
+  const bx = params.playArea, bz = params.playArea * 0.8, by = 7;
+  boundingBox.min.set(-bx, 0, -bz);
+  boundingBox.max.set(bx, by, bz);
+  refitShadow(); // shadow frustum must cover wherever bricks can travel
+}
+updateBounds();
+
+function latticeFor(def) {
+  let sx, sy, sz, inside;
+  if (def.type === 'cylinder') {
+    sx = sz = def.R * 2; sy = def.H;
+    inside = (x, y, z) => Math.hypot(x, z) <= def.R * 1.02;
+  } else if (def.type === 'plus') {
+    const [L, T, D] = def.bar; sx = L; sy = L; sz = D;
+    inside = (x, y, z) =>
+      (Math.abs(x) <= L / 2 && Math.abs(y) <= T / 2) ||
+      (Math.abs(x) <= T / 2 && Math.abs(y) <= L / 2);
+  } else if (def.type === 'ring') {
+    sx = sz = def.rOut * 2; sy = def.halfH * 2;
+    inside = (x, y, z) => {
+      const rd = Math.hypot(x, z);
+      return rd >= def.rIn * 0.95 && rd <= def.rOut * 1.03;
+    };
+  } else {
+    const [w, h, d] = def.size; sx = w; sy = h; sz = d;
+    inside = () => true;
+  }
+  const target = def.type === 'ring' ? 0.19 : 0.155; // swarm lattice: ~4 particles across a small cube
+  const nx = Math.max(3, Math.round(sx / target) + 1);
+  const ny = Math.max(3, Math.round(sy / target) + 1);
+  const nz = Math.max(3, Math.round(sz / target) + 1);
+  const spacing = Math.min(sx / (nx - 1), sy / (ny - 1), sz / (nz - 1));
+  const rest = [], active = [], sim = [];
+  for (let k = 0; k < nz; k++)
+    for (let j = 0; j < ny; j++)
+      for (let i = 0; i < nx; i++) {
+        const x = -sx / 2 + sx * (i / (nx - 1));
+        const y = -sy / 2 + sy * (j / (ny - 1));
+        const z = -sz / 2 + sz * (k / (nz - 1));
+        rest.push(x, y, z);
+        // for the ring the HOLE is punched out of the lattice entirely
+        // (a thin margin inside the inner wall stays, so skinning cells
+        // around the inner surface keep all 8 corners)
+        const isSim = def.type === 'ring'
+          ? (Math.hypot(x, z) >= def.rIn - spacing * 1.25) : true;
+        sim.push(isSim ? 1 : 0);
+        active.push(isSim && inside(x, y, z) ? 1 : 0);
+      }
+  return { nx, ny, nz, sx, sy, sz, rest, active, sim, spacing };
+}
+
+function makeSoftBody(obj, def, meshList) {
+  const lat = latticeFor(def);
+  const n = lat.nx * lat.ny * lat.nz;
+  const pos = new Float32Array(n * 3);
+  const prev = new Float32Array(n * 3);
+  const vel = new Float32Array(n * 3);
+  const restL = new Float32Array(lat.rest);
+
+  const m = new THREE.Matrix4();
+  if (def.rot) m.makeRotationFromEuler(new THREE.Euler(...def.rot));
+  m.setPosition(def.pos[0], def.pos[1], def.pos[2]);
+  const v = new THREE.Vector3();
+  for (let i = 0; i < n; i++) {
+    v.set(restL[i * 3], restL[i * 3 + 1], restL[i * 3 + 2]).applyMatrix4(m);
+    pos[i * 3] = v.x; pos[i * 3 + 1] = v.y; pos[i * 3 + 2] = v.z;
+  }
+
+  const sim = new Uint8Array(lat.sim);
+
+  // constraints: structural neighbours + face/body diagonals for shear
+  const id = (i, j, k) => (k * lat.ny + j) * lat.nx + i;
+  const cons = [];
+  const addC = (a, b) => {
+    if (!sim[a] || !sim[b]) return;
+    const dx = restL[a * 3] - restL[b * 3];
+    const dy = restL[a * 3 + 1] - restL[b * 3 + 1];
+    const dz = restL[a * 3 + 2] - restL[b * 3 + 2];
+    cons.push(a, b, Math.sqrt(dx * dx + dy * dy + dz * dz));
+  };
+  for (let k = 0; k < lat.nz; k++)
+    for (let j = 0; j < lat.ny; j++)
+      for (let i = 0; i < lat.nx; i++) {
+        if (i + 1 < lat.nx) addC(id(i, j, k), id(i + 1, j, k));
+        if (j + 1 < lat.ny) addC(id(i, j, k), id(i, j + 1, k));
+        if (k + 1 < lat.nz) addC(id(i, j, k), id(i, j, k + 1));
+        if (i + 1 < lat.nx && j + 1 < lat.ny) addC(id(i, j, k), id(i + 1, j + 1, k));
+        if (j + 1 < lat.ny && k + 1 < lat.nz) addC(id(i, j, k), id(i, j + 1, k + 1));
+        if (i + 1 < lat.nx && k + 1 < lat.nz) addC(id(i, j, k), id(i + 1, j, k + 1));
+        if (i + 1 < lat.nx && j + 1 < lat.ny && k + 1 < lat.nz)
+          addC(id(i, j, k), id(i + 1, j + 1, k + 1));
+      }
+
+  const body = {
+    obj, n, pos, prev, vel, restL, sim,
+    cons: new Float32Array(cons),
+    active: lat.active,
+    radius: lat.spacing * 0.55,
+    innerR: lat.spacing * 0.8,   // same-body repulsion range (rest pairs sit at 1.0x)
+    quat: new THREE.Quaternion(),
+    deform: 0,
+    still: 0,
+    charge: 0,
+    jumpDelay: 2 + Math.random(),
+    comPrev: new THREE.Vector3(1e9, 0, 0),
+    jumpDir: new THREE.Vector3(),
+    grounded: new Uint8Array(n),
+    skins: [],
+  };
+
+  // trilinear skin binding of every render vertex to its lattice cell
+  for (const mesh of meshList) {
+    const pa = mesh.geometry.attributes.position;
+    const vc = pa.count;
+    const idx = new Int32Array(vc * 8);
+    const wgt = new Float32Array(vc * 8);
+    for (let vi = 0; vi < vc; vi++) {
+      let fx = ((pa.getX(vi) + lat.sx / 2) / lat.sx) * (lat.nx - 1);
+      let fy = ((pa.getY(vi) + lat.sy / 2) / lat.sy) * (lat.ny - 1);
+      let fz = ((pa.getZ(vi) + lat.sz / 2) / lat.sz) * (lat.nz - 1);
+      fx = Math.min(Math.max(fx, 0), lat.nx - 1.0001);
+      fy = Math.min(Math.max(fy, 0), lat.ny - 1.0001);
+      fz = Math.min(Math.max(fz, 0), lat.nz - 1.0001);
+      const i0 = Math.floor(fx), j0 = Math.floor(fy), k0 = Math.floor(fz);
+      const tx = fx - i0, ty = fy - j0, tz = fz - k0;
+      let sum = 0;
+      for (let c = 0; c < 8; c++) {
+        const ci = i0 + (c & 1), cj = j0 + ((c >> 1) & 1), ck = k0 + ((c >> 2) & 1);
+        const w = (c & 1 ? tx : 1 - tx) *
+                  ((c >> 1) & 1 ? ty : 1 - ty) *
+                  ((c >> 2) & 1 ? tz : 1 - tz);
+        idx[vi * 8 + c] = id(ci, cj, ck);
+        wgt[vi * 8 + c] = w;
+        sum += w;
+      }
+      for (let c = 0; c < 8; c++) wgt[vi * 8 + c] /= sum;
+    }
+    pa.setUsage(THREE.DynamicDrawUsage);
+    body.skins.push({ mesh, idx, wgt });
+  }
+
+  obj.traverse(o => { o.userData.softBody = body; });
+  if (def.type === 'ring') ringBody = body;
+  return body;
+}
+
+/* ---- adaptive piece count: activate bodies in waves while the measured
+   frame time stays inside budget; a device gets exactly as many pieces as
+   it can afford. Dormant bodies are in no simulation loop (softBodies IS
+   the active set) and their meshes are invisible (also unhittable). */
+const dormantPool = [];
+const STARTER_BATCH = IS_MOBILE ? 12 : 24;
+
+let activeBricks = 0;
+brickMeshes.forEach(obj => {
+  const body = makeSoftBody(obj, obj.userData.def, obj.userData.meshList);
+  if (obj.userData.def.type === 'ring' || activeBricks++ < STARTER_BATCH) {
+    softBodies.push(body);
+  } else {
+    dormantPool.push(body);
+    for (const sk of body.skins) sk.mesh.visible = false;
+  }
+});
+
+const badgeBase = badge.textContent;
+const FPS_BUDGET_MS = 17;   // keep the average under ~59fps worth of frame time
+const SPAWN_BATCH = 8;
+const WARMUP_FRAMES = 90;   // let shader compilation spikes pass first
+let warmup = 0, frameAcc = 0, frameCnt = 0, calibrationDone = dormantPool.length === 0;
+let badgeFinalText = badgeBase;
+let splashBadgeTimer = 0;
+let camPaneTimer = 0;
+
+function adaptiveSpawn(rawDtMS) {
+  if (calibrationDone) return;
+  if (warmup < WARMUP_FRAMES) { warmup++; return; }
+  frameAcc += rawDtMS; frameCnt++;
+  if (frameCnt < 45) return;              // ~0.75s measurement window per wave
+  const avg = frameAcc / frameCnt;
+  frameAcc = 0; frameCnt = 0;
+  if (avg > FPS_BUDGET_MS || dormantPool.length === 0) {
+    calibrationDone = true;
+    badgeFinalText = `${badgeBase} · ${softBodies.length - NUM_RINGS}/${brickMeshes.length - NUM_RINGS} pieces`;
+    badge.textContent = badgeFinalText;
+    return;
+  }
+  for (let i = 0; i < SPAWN_BATCH && dormantPool.length; i++) {
+    const b = dormantPool.shift();
+    softBodies.push(b);
+    for (const sk of b.skins) sk.mesh.visible = true;
+  }
+  badge.textContent = `${badgeBase} · ${softBodies.length - 1} pieces…`;
+}
+
+// ---- robust rotation extraction (Mueller et al. 2016), warm-started
+const _erM = new THREE.Matrix4();
+const _erR0 = new THREE.Vector3(), _erR1 = new THREE.Vector3(), _erR2 = new THREE.Vector3();
+const _erA0 = new THREE.Vector3(), _erA1 = new THREE.Vector3(), _erA2 = new THREE.Vector3();
+const _erO = new THREE.Vector3(), _erT = new THREE.Vector3(), _erAxis = new THREE.Vector3();
+const _erDQ = new THREE.Quaternion();
+function extractRotation(A, q) {
+  _erA0.set(A[0], A[1], A[2]);
+  _erA1.set(A[3], A[4], A[5]);
+  _erA2.set(A[6], A[7], A[8]);
+  for (let it = 0; it < 14; it++) {
+    _erM.makeRotationFromQuaternion(q);
+    const e = _erM.elements;
+    _erR0.set(e[0], e[1], e[2]);
+    _erR1.set(e[4], e[5], e[6]);
+    _erR2.set(e[8], e[9], e[10]);
+    _erO.set(0, 0, 0)
+      .add(_erT.crossVectors(_erR0, _erA0))
+      .add(_erT.crossVectors(_erR1, _erA1))
+      .add(_erT.crossVectors(_erR2, _erA2));
+    const d = Math.abs(_erR0.dot(_erA0) + _erR1.dot(_erA1) + _erR2.dot(_erA2)) + 1e-9;
+    _erO.divideScalar(d);
+    const w = _erO.length();
+    if (w < 1e-7) break;
+    _erAxis.copy(_erO).divideScalar(w);
+    _erDQ.setFromAxisAngle(_erAxis, w);
+    q.premultiply(_erDQ).normalize();
+  }
+}
+
+const _shA = new Float32Array(9);
+function shapeMatch(b, k) {
+  const { pos, restL, n, sim } = b;
+  let cx = 0, cy = 0, cz = 0, m = 0;
+  for (let i = 0; i < n; i++) {
+    if (!sim[i]) continue;
+    cx += pos[i*3]; cy += pos[i*3+1]; cz += pos[i*3+2]; m++;
+  }
+  cx /= m; cy /= m; cz /= m;
+  const A = _shA; A.fill(0);
+  for (let i = 0; i < n; i++) {
+    if (!sim[i]) continue;
+    const px = pos[i*3] - cx, py = pos[i*3+1] - cy, pz = pos[i*3+2] - cz;
+    const qx = restL[i*3], qy = restL[i*3+1], qz = restL[i*3+2];
+    A[0] += px * qx; A[1] += py * qx; A[2] += pz * qx;
+    A[3] += px * qy; A[4] += py * qy; A[5] += pz * qy;
+    A[6] += px * qz; A[7] += py * qz; A[8] += pz * qz;
+  }
+  extractRotation(A, b.quat);
+  _erM.makeRotationFromQuaternion(b.quat);
+  const e = _erM.elements;
+  // recovery slows while heavily deformed: a hard squish lingers long enough
+  // to SEE, then snaps back; a resting brick recovers fast and stays crisp
+  const kEff = k * (0.35 + 0.65 / (1 + b.deform * 14));
+  let devSum = 0;
+  for (let i = 0; i < n; i++) {
+    if (!sim[i]) continue;
+    const qx = restL[i*3], qy = restL[i*3+1], qz = restL[i*3+2];
+    const gx = cx + e[0]*qx + e[4]*qy + e[8]*qz;
+    const gy = cy + e[1]*qx + e[5]*qy + e[9]*qz;
+    const gz = cz + e[2]*qx + e[6]*qy + e[10]*qz;
+    const ex = gx - pos[i*3], ey = gy - pos[i*3+1], ez = gz - pos[i*3+2];
+    devSum += Math.sqrt(ex*ex + ey*ey + ez*ez);
+    pos[i*3]   += kEff * ex;
+    pos[i*3+1] += kEff * ey;
+    pos[i*3+2] += kEff * ez;
+  }
+  b.deform = b.deform * 0.6 + (devSum / m) * 0.4;
+}
+
+// ---- inter-body particle collisions via a spatial hash
+const _hash = new Map();
+const HASH_CELL = 0.24;
+function collideBodies() {
+  _hash.clear();
+  for (let bi = 0; bi < softBodies.length; bi++) {
+    const b = softBodies[bi];
+    for (let i = 0; i < b.n; i++) {
+      if (!b.active[i]) continue;
+      const key =
+        ((Math.floor(b.pos[i*3]   / HASH_CELL) + 512) & 1023) |
+        (((Math.floor(b.pos[i*3+1] / HASH_CELL) + 512) & 1023) << 10) |
+        (((Math.floor(b.pos[i*3+2] / HASH_CELL) + 512) & 1023) << 20);
+      let arr = _hash.get(key);
+      if (!arr) { arr = []; _hash.set(key, arr); }
+      arr.push(bi, i);
+    }
+  }
+  for (let bi = 0; bi < softBodies.length; bi++) {
+    const b = softBodies[bi];
+    for (let i = 0; i < b.n; i++) {
+      if (!b.active[i]) continue;
+      const px = b.pos[i*3], py = b.pos[i*3+1], pz = b.pos[i*3+2];
+      const cxi = Math.floor(px / HASH_CELL), cyi = Math.floor(py / HASH_CELL), czi = Math.floor(pz / HASH_CELL);
+      for (let oz = -1; oz <= 1; oz++)
+        for (let oy = -1; oy <= 1; oy++)
+          for (let ox = -1; ox <= 1; ox++) {
+            const key =
+              (((cxi + ox) + 512) & 1023) |
+              ((((cyi + oy) + 512) & 1023) << 10) |
+              ((((czi + oz) + 512) & 1023) << 20);
+            const arr = _hash.get(key);
+            if (!arr) continue;
+            for (let a = 0; a < arr.length; a += 2) {
+              const bj = arr[a], j = arr[a + 1];
+              if (bj < bi) continue;
+              const same = bj === bi;
+              if (same && j <= i) continue;
+              const o = softBodies[bj];
+              const dx = o.pos[j*3] - px, dy = o.pos[j*3+1] - py, dz = o.pos[j*3+2] - pz;
+              // cross-body: surface contact. same-body: internal pressure —
+              // over-compressed material repels itself and has to go SOMEWHERE,
+              // which is what makes a squeezed brick mushroom outward.
+              const rr = same ? b.innerR : b.radius + o.radius;
+              const d2 = dx*dx + dy*dy + dz*dz;
+              if (d2 > rr * rr || d2 < 1e-12) continue;
+              const d = Math.sqrt(d2);
+              let strength;
+              if (same) {
+                // quadratic onset: light compression -> negligible push (keeps
+                // resting cubes crisp), deep compression -> full outward bulge
+                const onset = Math.min(1, ((rr - d) / rr) * 3);
+                strength = params.pbdVolume * 0.5 * onset * onset * (1 - 0.8 * (b.calm || 0));
+              } else {
+                strength = 0.5;
+              }
+              const corr = strength * (rr - d) / d;
+              b.pos[i*3]   -= dx * corr; b.pos[i*3+1] -= dy * corr; b.pos[i*3+2] -= dz * corr;
+              o.pos[j*3]   += dx * corr; o.pos[j*3+1] += dy * corr; o.pos[j*3+2] += dz * corr;
+              // pile landings splash the floor too: with 100 pieces most
+              // jumps come down ON other bricks — conduct that impact to the
+              // floor beneath the contact (one splash per landing)
+              if (!same && params.boilFloor) {
+                const bLand = (b.airT || 0) > 0.05 && (b.fallSpeed || 0) > 0.4;
+                const oLand = (o.airT || 0) > 0.05 && (o.fallSpeed || 0) > 0.4;
+                const trueLander = bLand && oLand
+                  ? (b.fallSpeed >= o.fallSpeed ? b : o)
+                  : (bLand ? b : (oLand ? o : null));
+                if (trueLander) {
+                  // COM fall speed (u/s) is the honest impact measure here —
+                  // the particle's own prev/pos delta was just cancelled by
+                  // the collision correction. One deposit stands in for a
+                  // whole body's worth of floor contacts.
+                  const li = trueLander === b ? i : j;
+                  dentFloorAt(trueLander.pos[li*3], trueLander.pos[li*3+2],
+                    Math.min(0.06, trueLander.fallSpeed * params.boilStrength * 0.026));
+                  trueLander.airT = 0; // one splash per landing
+                  playLand(trueLander, trueLander.fallSpeed || 1);
+                }
+                // supported = in contact AND vertically ~still. Judged on the
+                // SIGNED velocity: a rising jumper grazing neighbors keeps its
+                // airtime; only settled pile bricks reset
+                if (Math.abs(b.comVy || 0) < 0.3) b.airT = 0;
+                if (Math.abs(o.comVy || 0) < 0.3) o.airT = 0;
+              }
+            }
+          }
+    }
+  }
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  grabbing: pulls the actual particles near the pick point
+// ═══════════════════════════════════════════════════════════════════ 
+
+let grab = null;
+function applyGrab() {
+  if (!grab) return;
+  const b = grab.body;
+  for (let a = 0; a < grab.ids.length; a++) {
+    const i = grab.ids[a];
+    const gx = grab.target.x + grab.offs[a * 3];
+    const gy = grab.target.y + grab.offs[a * 3 + 1];
+    const gz = grab.target.z + grab.offs[a * 3 + 2];
+    b.pos[i*3]   += 0.45 * (gx - b.pos[i*3]);
+    b.pos[i*3+1] += 0.45 * (gy - b.pos[i*3+1]);
+    b.pos[i*3+2] += 0.45 * (gz - b.pos[i*3+2]);
+  }
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  auto-jump(s)
+// ═══════════════════════════════════════════════════════════════════ 
+
+const CHARGE_TIME = 0.5;
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  procedural harmonic sound(s)
+// ═══════════════════════════════════════════════════════════════════ 
+
+let actx = null, sndMaster = null, sndComp = null;
+let sndBudget = 4;
+const PENTA = [1, 9/8, 5/4, 3/2, 5/3, 2, 9/4, 5/2, 3, 10/3];
+const SND_ROOT = 196; // G3
+
+function ensureAudio() {
+  if (actx) { if (actx.state === 'suspended') actx.resume(); return; }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  actx = new AC();
+  sndComp = actx.createDynamicsCompressor();
+  sndComp.threshold.value = -18;
+  sndComp.ratio.value = 6;
+  sndComp.connect(actx.destination);
+  sndMaster = actx.createGain();
+  sndMaster.gain.value = 0;
+  sndMaster.connect(sndComp);
+}
+for (const ev of ['pointerdown', 'touchstart', 'keydown', 'wheel']) {
+  window.addEventListener(ev, ensureAudio, { passive: true });
+}
+
+function sndVoiceOK(b) {
+  if (!actx || !params.soundEnabled || sndBudget < 1) return false;
+  const now = performance.now();
+  if (b && b.lastSnd && now - b.lastSnd < 150) return false; // per-body cooldown
+  if (b) b.lastSnd = now;
+  sndBudget -= 1;
+  return true;
+}
+
+function bodyNote(b) {
+  if (b.noteIdx === undefined) b.noteIdx = (Math.random() * PENTA.length) | 0;
+  // bigger bodies ring lower: scale octave by particle count
+  const sizeShift = b.n > 120 ? 0.5 : 1;
+  return SND_ROOT * PENTA[b.noteIdx] * sizeShift;
+}
+
+function playJump(b) {
+  if (!sndVoiceOK(b)) return;
+  const t0 = actx.currentTime;
+  const o = actx.createOscillator();
+  o.type = 'triangle';
+  const f = bodyNote(b);
+  o.frequency.setValueAtTime(f, t0);
+  o.frequency.exponentialRampToValueAtTime(f * 1.4, t0 + 0.12); // rising blip
+  const g = actx.createGain();
+  g.gain.setValueAtTime(0, t0);
+  g.gain.linearRampToValueAtTime(0.045, t0 + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.0004, t0 + 0.22);
+  o.connect(g); g.connect(sndMaster);
+  o.start(t0); o.stop(t0 + 0.25);
+}
+
+function playLand(b, speed) {
+  if (!sndVoiceOK(b)) return;
+  const t0 = actx.currentTime;
+  const f = bodyNote(b) * 0.5;                        // landings an octave down
+  const lvl = Math.min(0.09, 0.02 + speed * 0.018);   // louder for harder hits
+  const partial = (mult, amp, dur) => {
+    const o = actx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(f * mult, t0);
+    const g = actx.createGain();
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(lvl * amp, t0 + 0.006); // mallet attack
+    g.gain.exponentialRampToValueAtTime(0.0004, t0 + dur);
+    o.connect(g); g.connect(sndMaster);
+    o.start(t0); o.stop(t0 + dur + 0.03);
+  };
+  partial(1.0, 1.0, 0.42);   // fundamental
+  partial(3.9, 0.35, 0.16);  // marimba-like upper partial, dies fast
+}
+function updateAutoJump(dt) {
+  for (const b of softBodies) {
+    // user interaction wins: a grabbed shape aborts any wind-up immediately
+    // and waits for the user's input
+    if (grab && grab.body === b) { b.still = 0; b.charge = 0; b.calm = 0; continue; }
+
+    // stillness via CENTRE-OF-MASS speed: a resting jelly body never stops
+    // micro-jittering internally (pressure + shape matching), so per-particle
+    // speed can't settle below a threshold — but all that jitter cancels in
+    // the COM, which truly sits still when the shape is at rest
+    let cx = 0, cy = 0, cz = 0, m = 0;
+    for (let i = 0; i < b.n; i += 2) {
+      if (!b.sim[i]) continue;
+      cx += b.pos[i*3]; cy += b.pos[i*3+1]; cz += b.pos[i*3+2]; m++;
+    }
+    cx /= m; cy /= m; cz /= m;
+    const dxC = cx - b.comPrev.x, dyC = cy - b.comPrev.y, dzC = cz - b.comPrev.z;
+    const comSpeed = Math.sqrt(dxC*dxC + dyC*dyC + dzC*dzC) / Math.max(dt, 1e-4);
+    b.comVy = dyC / Math.max(dt, 1e-4);            // signed COM vertical velocity
+    b.fallSpeed = Math.max(0, -b.comVy);           // COM fall speed, u/s
+    b.comPrev.set(cx, cy, cz);
+
+    // calm ramps in after ~0.3s of genuine stillness; any disturbance
+    // (impact, shove, wind-up) resets b.still and releases it instantly
+    b.calm = (b.charge > 0 || !params.restCalm) ? 0 : Math.min(1, Math.max(0, (b.still - 0.3) * 3));
+    if (b.calm > 0) {
+      // progressively kill residual micro-motion: scale velocities and pull
+      // the verlet history onto the positions
+      const f = 1 - b.calm * 0.6;
+      for (let i = 0; i < b.n; i++) {
+        if (!b.sim[i]) continue;
+        b.vel[i*3] *= f; b.vel[i*3+1] *= f; b.vel[i*3+2] *= f;
+        b.prev[i*3]   = b.pos[i*3]   - (b.pos[i*3]   - b.prev[i*3])   * f;
+        b.prev[i*3+1] = b.pos[i*3+1] - (b.pos[i*3+1] - b.prev[i*3+1]) * f;
+        b.prev[i*3+2] = b.pos[i*3+2] - (b.pos[i*3+2] - b.prev[i*3+2]) * f;
+      }
+    }
+
+    if (!params.autoJump) { b.charge = 0; continue; }
+
+    if (b.charge > 0) {
+      b.charge += dt;
+      if (b.charge >= CHARGE_TIME) {
+        const a = Math.random() * Math.PI * 2;
+        // real sideways leaps: lateral share up to ~2.1 vs vertical 1.0-1.8,
+        // so some jumps pop straight up and some lunge nearly flat across
+        const lat = 0.6 + Math.random() * 1.5;
+        b.jumpDir.set(Math.cos(a) * lat, 1.0 + Math.random() * 0.8, Math.sin(a) * lat).normalize();
+        const p = params.autoJumpPower;
+        for (let i = 0; i < b.n; i++) {
+          if (!b.sim[i]) continue;
+          b.vel[i*3]   += b.jumpDir.x * p + (Math.random() - 0.5) * 0.6;
+          b.vel[i*3+1] += b.jumpDir.y * p;
+          b.vel[i*3+2] += b.jumpDir.z * p + (Math.random() - 0.5) * 0.6;
+        }
+        b.charge = 0;
+        b.still = 0;
+        b.jumpDelay = 2 + Math.random();
+        playJump(b);
+      }
+    } else if (comSpeed < 0.3) {
+      b.still += dt;
+      if (b.still > b.jumpDelay) b.charge = 1e-4;
+    } else {
+      b.still = 0;
+    }
+  }
+}
+
+function pbdStep(dt) {
+  const sub = Math.max(1, params.pbdSubsteps | 0);
+  const h = dt / sub;
+  const g = params.gravity;
+  const kDist = params.pbdStiffness;
+  // pbdShape is the PER-FRAME recovery fraction; convert to per-substep so
+  // changing substeps doesn't change the material
+  const kShapeSub = 1 - Math.pow(1 - Math.min(0.97, params.pbdShape), 1 / sub);
+  const kCompress = params.pbdCompress;
+  const dampF = Math.max(0, 1 - params.pbdDamping * 60 * h);
+  const bb = boundingBox;
+
+  for (let s = 0; s < sub; s++) {
+    for (const b of softBodies) {
+      const { pos, prev, vel, n, sim } = b;
+      for (let i = 0; i < n; i++) {
+        if (!sim[i]) continue;
+        vel[i*3+1] += g * h;
+        vel[i*3] *= dampF; vel[i*3+1] *= dampF; vel[i*3+2] *= dampF;
+        prev[i*3] = pos[i*3]; prev[i*3+1] = pos[i*3+1]; prev[i*3+2] = pos[i*3+2];
+        pos[i*3] += vel[i*3] * h; pos[i*3+1] += vel[i*3+1] * h; pos[i*3+2] += vel[i*3+2] * h;
+      }
+    }
+
+    applyGrab();
+
+    // wind-up crouch: squash vertically, bulge laterally against the floor
+    for (const b of softBodies) {
+      if (b.charge <= 0) continue;
+      const amt = Math.min(1, b.charge / CHARGE_TIME);
+      const kC = 0.3 * amt;
+      let cx = 0, cy = 0, cz = 0, m = 0;
+      for (let i = 0; i < b.n; i++) {
+        if (!b.sim[i]) continue;
+        cx += b.pos[i*3]; cy += b.pos[i*3+1]; cz += b.pos[i*3+2]; m++;
+      }
+      cx /= m; cy /= m; cz /= m;
+      for (let i = 0; i < b.n; i++) {
+        if (!b.sim[i]) continue;
+        const ox = b.pos[i*3] - cx, oy = b.pos[i*3+1] - cy, oz = b.pos[i*3+2] - cz;
+        b.pos[i*3+1] += kC * (cy + oy * 0.55 - b.pos[i*3+1]);
+        b.pos[i*3]   += kC * 0.5 * (cx + ox * 1.22 - b.pos[i*3]);
+        b.pos[i*3+2] += kC * 0.5 * (cz + oz * 1.22 - b.pos[i*3+2]);
+      }
+    }
+
+    for (const b of softBodies) {
+      const { pos, cons } = b;
+      for (let c = 0; c < cons.length; c += 3) {
+        const a = cons[c] | 0, d = cons[c + 1] | 0, rest = cons[c + 2];
+        const dx = pos[d*3] - pos[a*3], dy = pos[d*3+1] - pos[a*3+1], dz = pos[d*3+2] - pos[a*3+2];
+        const len = Math.sqrt(dx*dx + dy*dy + dz*dz);
+        if (len < 1e-9) continue;
+        // compression yields more easily than stretch: bricks crunch under
+        // load without melting apart
+        const kk = len < rest ? kDist * kCompress : kDist;
+        const corr = kk * 0.5 * (len - rest) / len;
+        pos[a*3]   += dx * corr; pos[a*3+1] += dy * corr; pos[a*3+2] += dz * corr;
+        pos[d*3]   -= dx * corr; pos[d*3+1] -= dy * corr; pos[d*3+2] -= dz * corr;
+      }
+    }
+
+    for (const b of softBodies) shapeMatch(b, kShapeSub);
+
+    collideBodies();
+
+    // floor + walls (active particles only — a plus brick rests on its arm,
+    // not on the empty corners of its lattice bounding box)
+    for (const b of softBodies) {
+      const { pos, prev, n, radius, active, grounded, sim } = b;
+      for (let i = 0; i < n; i++) {
+        grounded[i] = 0;
+        if (!sim[i] || !active[i]) continue;
+        if (pos[i*3+1] < radius) {
+          // dent the boiling floor on landings: any touchdown after real
+          // airtime ripples (even soft hops), scaled by impact speed. The
+          // grounded wind-up squashes never leave the floor, so they can't
+          // fire; a very fast press-through still registers via the speed path.
+          if (params.boilFloor) {
+            const fall = prev[i*3+1] - pos[i*3+1];
+            const wasAirborne = (b.airT || 0) > 0.05 || (b.landT || 0) > 0;
+            if ((wasAirborne && fall > 0.002) || fall > 0.010) {
+              // landings hit ~4x harder than presses: self-jump touchdown
+              // speeds (~3-4 u/s) need it to register; drag-presses keep the
+              // approved feel via the lower factor
+              const f = wasAirborne ? 1.4 : 0.07;
+              dentFloorAt(pos[i*3], pos[i*3+2], Math.min(0.03, (fall - 0.001) * params.boilStrength * f));
+            }
+          }
+          pos[i*3+1] = radius;
+          // ground friction: pull the tangential step back
+          prev[i*3]   += (pos[i*3]   - prev[i*3]) * 0.4;
+          prev[i*3+2] += (pos[i*3+2] - prev[i*3+2]) * 0.4;
+          grounded[i] = 1;
+        }
+        if (pos[i*3+1] > bb.max.y - radius) pos[i*3+1] = bb.max.y - radius;
+        if (pos[i*3] < bb.min.x + radius) pos[i*3] = bb.min.x + radius;
+        else if (pos[i*3] > bb.max.x - radius) pos[i*3] = bb.max.x - radius;
+        if (pos[i*3+2] < bb.min.z + radius) pos[i*3+2] = bb.min.z + radius;
+        else if (pos[i*3+2] > bb.max.z - radius) pos[i*3+2] = bb.max.z - radius;
+      }
+    }
+
+    // airtime bookkeeping for landing splashes: a body with no grounded
+    // particle accumulates airT; the first ground contact reads it (above),
+    // then it resets here
+    for (const b of softBodies) {
+      let g = 0;
+      for (let i = 0; i < b.n; i++) if (b.grounded[i]) { g = 1; break; }
+      if (g && (b.airT || 0) > 0.05) {
+        b.landT = 0.06; // touchdown: open the landing window
+        playLand(b, b.fallSpeed || 1);
+      }
+      b.airT = g ? 0 : (b.airT || 0) + h;
+      if (b.landT) b.landT = Math.max(0, b.landT - h);
+    }
+
+    for (const b of softBodies) {
+      const { pos, prev, vel, n, grounded, sim } = b;
+      const invH = 1 / h;
+      for (let i = 0; i < n; i++) {
+        if (!sim[i]) continue;
+        vel[i*3]   = (pos[i*3]   - prev[i*3])   * invH;
+        vel[i*3+1] = (pos[i*3+1] - prev[i*3+1]) * invH;
+        vel[i*3+2] = (pos[i*3+2] - prev[i*3+2]) * invH;
+        if (grounded[i]) { vel[i*3] *= 0.9; vel[i*3+2] *= 0.9; }
+      }
+    }
+  }
+}
+
+function updateSkins() {
+  for (const b of softBodies) {
+    for (const sk of b.skins) {
+      const pa = sk.mesh.geometry.attributes.position;
+      const arr = pa.array, idx = sk.idx, wgt = sk.wgt, P = b.pos;
+      const vc = pa.count;
+      for (let vi = 0; vi < vc; vi++) {
+        let x = 0, y = 0, z = 0;
+        const o = vi * 8;
+        for (let c = 0; c < 8; c++) {
+          const p = idx[o + c] * 3, w = wgt[o + c];
+          x += P[p] * w; y += P[p + 1] * w; z += P[p + 2] * w;
+        }
+        arr[vi*3] = x; arr[vi*3+1] = y; arr[vi*3+2] = z;
+      }
+      pa.needsUpdate = true;
+      sk.mesh.geometry.computeVertexNormals();
+    }
+  }
+}
+updateSkins(); // valid world-space geometry before the first frame
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  interaction(s)
+// ═══════════════════════════════════════════════════════════════════ 
+
+const raycaster = new THREE.Raycaster();
+const movementPlane = new THREE.Mesh(new THREE.PlaneGeometry(100, 100), new THREE.MeshBasicNodeMaterial());
+movementPlane.visible = false;
+scene.add(movementPlane);
+
+let pointerMode = null; // 'drag' | 'orbit'
+let canvasRect = null;
+let lastPX = 0, lastPY = 0;
+const _grabTmp = new THREE.Vector3();
+
+function getIntersection(clientX, clientY, target) {
+  const mouse = new THREE.Vector2(
+    (clientX / canvas.clientWidth) * 2 - 1,
+    -((clientY / canvas.clientHeight) * 2 - 1)
+  );
+  raycaster.setFromCamera(mouse, camera);
+  const targets = Array.isArray(target) ? target : [target];
+  const hits = raycaster.intersectObjects(targets, true);
+  return hits.length > 0 ? hits[0] : undefined;
+}
+
+function startGrab(hit) {
+  const body = hit.object.userData.softBody;
+  if (!body) return false;
+  const R = 0.45, R2 = R * R;
+  const ids = [], offs = [];
+  const hx = hit.point.x, hy = hit.point.y, hz = hit.point.z;
+  for (let i = 0; i < body.n; i++) {
+    if (!body.sim[i]) continue;
+    const dx = body.pos[i*3] - hx, dy = body.pos[i*3+1] - hy, dz = body.pos[i*3+2] - hz;
+    if (dx*dx + dy*dy + dz*dz < R2) {
+      ids.push(i);
+      offs.push(dx, dy, dz);
+    }
+  }
+  if (!ids.length) return false;
+  grab = { body, ids, offs: new Float32Array(offs), target: hit.point.clone() };
+  return true;
+}
+
+const activePointers = new Map();
+let pinchDist = 0;
+
+canvas.addEventListener('pointerdown', (e) => {
+  activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (activePointers.size === 2) {
+    // second finger: whatever was happening becomes a pinch
+    const [a, b] = [...activePointers.values()];
+    pinchDist = Math.hypot(a.x - b.x, a.y - b.y);
+    pointerMode = 'pinch';
+    grab = null;
+    e.preventDefault();
+    return;
+  }
+  canvasRect = canvas.getBoundingClientRect();
+  const clientX = e.clientX - canvasRect.left;
+  const clientY = e.clientY - canvasRect.top;
+  canvas.setPointerCapture(e.pointerId);
+
+  const intersection = getIntersection(clientX, clientY, ringMeshes.length ? [bricksContainer, ...ringMeshes] : bricksContainer);
+  if (intersection && startGrab(intersection)) {
+    pointerMode = 'drag';
+    movementPlane.position.copy(intersection.point);
+    movementPlane.quaternion.copy(camera.quaternion);
+    movementPlane.updateMatrixWorld(true);
+    canvas.classList.add('dragging');
+  } else {
+    pointerMode = 'orbit';
+    lastPX = e.clientX; lastPY = e.clientY;
+    canvas.classList.add('dragging');
+  }
+
+  if (!hintHidden) { if (hint) hint.style.opacity = 0; hintHidden = true; }
+  e.preventDefault();
+}, { passive: false });
+
+canvas.addEventListener('pointermove', (e) => {
+  if (activePointers.has(e.pointerId)) activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pointerMode === 'pinch') {
+    if (activePointers.size === 2) {
+      const [a, b] = [...activePointers.values()];
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (pinchDist > 0 && d > 0) {
+        orbit.radius = Math.min(40, Math.max(7, orbit.radius * (pinchDist / d)));
+      }
+      pinchDist = d;
+    }
+    return;
+  }
+  if (pointerMode === 'drag' && grab) {
+    const clientX = e.clientX - canvasRect.left;
+    const clientY = e.clientY - canvasRect.top;
+    const intersection = getIntersection(clientX, clientY, movementPlane);
+    if (intersection) {
+      _grabTmp.copy(intersection.point);
+      boundingBox.clampPoint(_grabTmp, _grabTmp);
+      grab.target.copy(_grabTmp);
+    }
+  } else if (pointerMode === 'orbit') {
+    const dx = e.clientX - lastPX;
+    const dy = e.clientY - lastPY;
+    lastPX = e.clientX; lastPY = e.clientY;
+    orbit.theta -= dx * 0.005;
+    orbit.phi = Math.min(1.45, Math.max(0.15, orbit.phi - dy * 0.005));
+  }
+});
+
+['pointerup', 'pointercancel'].forEach(type => {
+  canvas.addEventListener(type, (e) => {
+    activePointers.delete(e.pointerId);
+    if (pointerMode === 'pinch' && activePointers.size >= 2) return; // still pinching
+    // a THROW gets the jump sound too: measure the released body's mean
+    // velocity — fast lets go plays the blip, gently placing stays silent
+    if (grab && grab.body) {
+      const b = grab.body;
+      let vx = 0, vy = 0, vz = 0, c = 0;
+      for (let i = 0; i < b.n; i++) {
+        if (!b.sim[i]) continue;
+        vx += b.vel[i*3]; vy += b.vel[i*3+1]; vz += b.vel[i*3+2]; c++;
+      }
+      if (Math.hypot(vx, vy, vz) / Math.max(1, c) > 1.2) playJump(b);
+    }
+    pointerMode = null;
+    grab = null;
+    canvas.classList.remove('dragging');
+  });
+});
+
+canvas.addEventListener('wheel', (e) => {
+  orbit.radius = Math.min(40, Math.max(7, orbit.radius * Math.exp(e.deltaY * 0.0012)));
+  e.preventDefault();
+}, { passive: false });
+
+window.addEventListener('keydown', (e) => {
+  if (e.key === '1') { params.enableSSS = !params.enableSSS; if (pane) pane.refresh(); }
+  if (e.key === '2') { params.enableSSAO = !params.enableSSAO; if (pane) pane.refresh(); }
+});
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  tweakpane
+// ═══════════════════════════════════════════════════════════════════ 
+
+let pane = null;
+
+async function loadPaneClass() {
+  const urls = [
+    'https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.min.js',
+    'https://unpkg.com/tweakpane@4.0.5/dist/tweakpane.min.js',
+    'https://esm.sh/tweakpane@4.0.5',
+    // last-resort fallbacks
+    'https://cdn.jsdelivr.net/npm/tweakpane@3.1.10/dist/tweakpane.min.js',
+    'https://cdnjs.cloudflare.com/ajax/libs/tweakpane/4.0.5/tweakpane.min.js',
+  ];
+  for (const url of urls) {
+    try {
+      const mod = await import(/* @vite-ignore */ url);
+      if (mod && mod.Pane) return mod.Pane;                                        // v4 ESM
+      if (window.Tweakpane && window.Tweakpane.Pane) return window.Tweakpane.Pane; // v3 UMD
+    } catch (_) { /* try next CDN */ }
+  }
+  return null;
+}
+
+function buildPane(PaneClass) {
+  pane = new PaneClass({ container: document.getElementById('pane-container'), title: 'Controls', expanded: false });
+  // v4 renamed addInput -> addBinding; support both
+  const failed = [];
+  const bind = (target, obj, key, opts) => {
+    try {
+      return target.addBinding
+        ? target.addBinding(obj, key, opts)
+        : target.addInput(obj, key, opts);
+    } catch (err) {
+      failed.push(key);
+      console.error('pane binding failed:', key, err);
+      return { on: () => {} }; // keep chained .on('change') calls safe
+    }
+  };
+
+  const fColors = pane.addFolder({ title: 'colors', expanded: false });
+  bind(fColors, params, 'color1', { color: { type: 'float' } })
+    .on('change', ev => materialsByColor[0].forEach(m => m.color.setRGB(ev.value.r, ev.value.g, ev.value.b)));
+  bind(fColors, params, 'color2', { color: { type: 'float' } })
+    .on('change', ev => materialsByColor[1].forEach(m => m.color.setRGB(ev.value.r, ev.value.g, ev.value.b)));
+  bind(fColors, params, 'color3', { color: { type: 'float' } })
+    .on('change', ev => materialsByColor[2].forEach(m => m.color.setRGB(ev.value.r, ev.value.g, ev.value.b)));
+  bind(fColors, params, 'color4', { color: { type: 'float' } })
+    .on('change', ev => materialsByColor[3].forEach(m => m.color.setRGB(ev.value.r, ev.value.g, ev.value.b)));
+  bind(fColors, params, 'color5', { color: { type: 'float' } })
+    .on('change', ev => materialsByColor[4].forEach(m => m.color.setRGB(ev.value.r, ev.value.g, ev.value.b)));
+  bind(fColors, params, 'color6', { color: { type: 'float' } })
+    .on('change', ev => materialsByColor[5].forEach(m => m.color.setRGB(ev.value.r, ev.value.g, ev.value.b)));
+  bind(fColors, params, 'bgInner', { color: { type: 'float' } });
+  bind(fColors, params, 'bgOuter', { color: { type: 'float' } });
+  bind(fColors, params, 'bgGlow', { min: 0, max: 0.5 });
+  bind(fColors, params, 'floorBrightness', { min: 0, max: 0.6 });
+  bind(fColors, params, 'floorFadeStart', { min: 1, max: 12 });
+  bind(fColors, params, 'floorFadeEnd', { min: 4, max: 30 });
+
+  const fWet = pane.addFolder({ title: 'wet floor', expanded: false });
+  bind(fWet, params, 'wetFloor');
+  bind(fWet, params, 'wetAmount', { min: 0, max: 1 });
+  bind(fWet, params, 'wetBlur', { min: 0, max: 1.5 });
+  bind(fWet, params, 'wetDistort', { min: 0, max: 1.5 });
+  bind(fWet, params, 'wetScale', { min: 0.05, max: 4 });
+  bind(fWet, params, 'wetSpeed', { min: 0, max: 0.6 });
+  bind(fWet, params, 'wetFresnel', { min: 0.5, max: 6 });
+  bind(fWet, params, 'wetTint', { color: { type: 'float' } });
+
+  const fCam = pane.addFolder({ title: 'camera', expanded: false });
+  bind(fCam, params, 'camX', { min: -40, max: 40 }).on('change', setCameraFromSliders);
+  bind(fCam, params, 'camY', { min: 10, max: 40 }).on('change', setCameraFromSliders);
+  bind(fCam, params, 'camZ', { min: -40, max: 40 }).on('change', setCameraFromSliders);
+  const fLight = pane.addFolder({ title: 'light', expanded: false });
+  bind(fLight, params, 'lightStrength', { min: 0.2, max: 5 });
+  bind(fLight, params, 'lightAzimuth', { min: -180, max: 180 }).on('change', updateLight);
+  bind(fLight, params, 'lightElevation', { min: 10, max: 85 }).on('change', updateLight);
+  bind(fLight, params, 'shadowSoftness', { min: 0, max: 40 });
+  bind(fLight, params, 'shadowFeather', { min: 0.25, max: 6 });
+  bind(fLight, params, 'shadowMapSize', { options: { '512 (softest)': 512, '1024': 1024, '2048': 2048, '4096 (crispest)': 4096 } });
+  bind(fLight, params, 'shadowIntensity', { min: 0, max: 1 });
+  bind(fLight, params, 'shadowBias', { min: -0.01, max: 0.01, step: 0.0005 });
+  bind(fLight, params, 'shadowNormalBias', { min: 0, max: 0.3 });
+  bind(fLight, params, 'shadowPowerBrick', { min: 0, max: 1.5 });
+  bind(fLight, params, 'shadowPowerFloor', { min: 0, max: 1.5 });
+
+  const fMat = pane.addFolder({ title: 'material', expanded: false });
+  bind(fMat, params, 'directMix', { min: 0, max: 1.5 });
+  bind(fMat, params, 'ambientMix', { min: 0, max: 1 });
+  bind(fMat, params, 'specStrength', { min: 0, max: 3 });
+  bind(fMat, params, 'shininess', { min: 1, max: 64 });
+  bind(fMat, params, 'fresnel', { min: 0, max: 0.4 });
+  bind(fMat, params, 'specNoise', { min: 0, max: 1.5 });
+  bind(fMat, params, 'dotNormalAmt', { min: 0, max: 6 });
+  bind(fMat, params, 'dotsEnabled');
+  bind(fMat, params, 'dotDensity', { min: 1, max: 48 });
+  bind(fMat, params, 'dotThickness', { min: 0, max: 0.6 });
+
+  const fGlassR = pane.addFolder({ title: 'glass ring', expanded: false });
+  bind(fGlassR, params, 'glassIor', { min: 1, max: 2.33 });
+  bind(fGlassR, params, 'glassRoughness', { min: 0, max: 0.5 });
+  bind(fGlassR, params, 'glassShift', { min: 0, max: 0.5 });
+  bind(fGlassR, params, 'glassIrid', { min: 0, max: 1 });
+  bind(fGlassR, params, 'glassIridIor', { min: 1, max: 2 });
+  bind(fGlassR, params, 'glassEnv', { min: 0, max: 3 });
+
+  const fSSS = pane.addFolder({ title: 'subsurface (screen space)', expanded: false });
+  bind(fSSS, params, 'enableSSS');
+  bind(fSSS, params, 'sssScale', { min: 0, max: 24 });
+  bind(fSSS, params, 'sssLumFactor', { min: 0, max: 3 });
+  bind(fSSS, params, 'sssDepthFactor', { min: 0, max: 80 });
+  bind(fSSS, params, 'hueShift', { min: -0.5, max: 0.5 });
+  bind(fSSS, params, 'tintValueMin', { min: 0, max: 1 });
+
+  const fAO = pane.addFolder({ title: 'ssao', expanded: false });
+  bind(fAO, params, 'enableSSAO');
+  bind(fAO, params, 'ssaoRadius', { min: 0.02, max: 1 });
+  bind(fAO, params, 'ssaoStrength', { min: 0, max: 1 });
+  bind(fAO, params, 'ssaoMaxDistance', { min: 0.002, max: 0.1 });
+
+  const fComp = pane.addFolder({ title: 'composite', expanded: false });
+  bind(fComp, params, 'exposure', { min: 0.2, max: 3 });
+  bind(fComp, params, 'desaturate', { min: -0.5, max: 1 });
+
+  const fSound = pane.addFolder({ title: 'sound', expanded: false });
+  bind(fSound, params, 'soundEnabled');
+  bind(fSound, params, 'soundVolume', { min: 0, max: 1 });
+  const fBoil = pane.addFolder({ title: 'soft floor', expanded: false });
+  bind(fBoil, params, 'boilFloor');
+  bind(fBoil, params, 'boilStrength', { min: 0, max: 4 });
+  bind(fBoil, params, 'boilWave', { min: 0.05, max: 0.6 });
+  bind(fBoil, params, 'boilSpring', { min: 0, max: 0.2 });
+  bind(fBoil, params, 'boilDamp', { min: 0.85, max: 0.995 });
+  bind(fBoil, params, 'boilMaxDepth', { min: 0.1, max: 1 });
+  const fPhys = pane.addFolder({ title: 'physics', expanded: false });
+  bind(fPhys, params, 'restCalm');
+  bind(fPhys, params, 'gravity', { min: -40, max: -0.5 });
+  bind(fPhys, params, 'playArea', { min: 2, max: 10 });
+  bind(fPhys, params, 'pbdSubsteps', { min: 2, max: 12, step: 1 });
+  bind(fPhys, params, 'pbdStiffness', { min: 0.1, max: 1 });
+  bind(fPhys, params, 'pbdShape', { min: 0.05, max: 0.95 });
+  bind(fPhys, params, 'pbdCompress', { min: 0.05, max: 1 });
+  bind(fPhys, params, 'pbdVolume', { min: 0, max: 1 });
+  bind(fPhys, params, 'pbdDamping', { min: 0, max: 0.2 });
+  bind(fPhys, params, 'autoJump');
+  bind(fPhys, params, 'autoJumpPower', { min: 2, max: 16 });
+
+  if (failed.length) {
+    badge.textContent += ' · pane: ' + failed.length + ' binding(s) failed (see console)';
+  }
+}
+
+loadPaneClass().then((PaneClass) => {
+  if (PaneClass) {
+    buildPane(PaneClass);
+    return;
+  }
+  else {
+    console.warn('tweakpane could not be loaded — running without the settings panel');
+    badge.textContent += ' · tweakpane CDN unreachable — scene runs without panel';
+  }
+});
+
+function syncParams() {
+  uLightScale.value = params.lightStrength;
+  mainLight.intensity = params.lightStrength * Math.PI;
+  mainLight.shadow.radius = params.shadowSoftness;
+  mainLight.shadow.bias = params.shadowBias;
+  mainLight.shadow.normalBias = params.shadowNormalBias;
+  mainLight.shadow.intensity = params.shadowIntensity;
+  if (mainLight.shadow.mapSize.width !== params.shadowMapSize) {
+    mainLight.shadow.mapSize.set(params.shadowMapSize, params.shadowMapSize);
+    if (mainLight.shadow.map) { mainLight.shadow.map.dispose(); mainLight.shadow.map = null; } // force re-alloc
+  }
+  uShadowFeather.value = params.shadowFeather;
+  uShadowPowBrick.value = params.shadowPowerBrick;
+  uShadowPowFloor.value = params.shadowPowerFloor;
+  uDirectMix.value = params.directMix;
+  uAmbientMix.value = params.ambientMix;
+  uSpecStrength.value = params.specStrength;
+  uShininess.value = params.shininess;
+  uFresnelAmt.value = params.fresnel;
+  uSpecNoiseAmt.value = params.specNoise;
+  uDotNormalAmt.value = params.dotNormalAmt;
+  uDotDensity.value = params.dotDensity;
+  uDotsOn.value = params.dotsEnabled ? 1 : 0;
+  uDotThickness.value = params.dotThickness;
+  uSSSScale.value = params.sssScale;
+  uSSSLumFactor.value = params.sssLumFactor;
+  uSSSDepthFactor.value = params.sssDepthFactor;
+  uHueShift.value = params.hueShift;
+  uTintVMin.value = params.tintValueMin;
+  uKernelRadius.value = params.ssaoRadius;
+  uSSAOStrength.value = params.ssaoStrength;
+  uMaxDistance.value = params.ssaoMaxDistance;
+  uExposure.value = params.exposure;
+  uDesat.value = params.desaturate;
+  uFloorBright.value = params.floorBrightness;
+  uFloorFadeStart.value = params.floorFadeStart;
+  uFloorFadeEnd.value = params.floorFadeEnd;
+  if (lastPlayArea !== params.playArea) {
+    lastPlayArea = params.playArea;
+    updateBounds();
+  }
+  // gravity is read directly by pbdStep each substep
+  bgColor.setRGB(params.bgOuter.r, params.bgOuter.g, params.bgOuter.b);
+  uBgInner.value.setRGB(params.bgInner.r, params.bgInner.g, params.bgInner.b);
+  uBgOuter.value.setRGB(params.bgOuter.r, params.bgOuter.g, params.bgOuter.b);
+  uBgGlow.value = params.bgGlow;
+  uAspect.value = canvas.clientWidth / Math.max(1, canvas.clientHeight);
+  uWetAmount.value = params.wetFloor ? params.wetAmount : 0;
+  uWetBlur.value = params.wetBlur;
+  uWetDistort.value = params.wetDistort;
+  uWetScale.value = params.wetScale;
+  uWetSpeed.value = params.wetSpeed;
+  uWetFresnel.value = params.wetFresnel;
+  uWetTint.value.setRGB(params.wetTint.r, params.wetTint.g, params.wetTint.b);
+  uGIor.value = params.glassIor;
+  uGShift.value = params.glassShift;
+  for (const gm of glassMats) {
+    gm.ior = params.glassIor;
+    gm.roughness = params.glassRoughness;
+    gm.iridescence = params.glassIrid;
+    gm.iridescenceIOR = params.glassIridIor;
+    gm.envMapIntensity = params.glassEnv;
+  }
+  glassScene.environmentIntensity = params.glassEnv;
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  render-loop
+// ═══════════════════════════════════════════════════════════════════ 
+
+const bgColor = new THREE.Color(params.bgOuter.r, params.bgOuter.g, params.bgOuter.b);
+
+const MIRROR_Y = 0;
+const mirrorCam = new THREE.PerspectiveCamera();
+const _mirTM = new THREE.Matrix4();
+const _mirPos = new THREE.Vector3(), _mirDir = new THREE.Vector3(),
+      _mirUp = new THREE.Vector3(), _mirTgt = new THREE.Vector3();
+
+function renderMirror() {
+  _mirPos.setFromMatrixPosition(camera.matrixWorld);
+  _mirPos.y = 2 * MIRROR_Y - _mirPos.y;
+  camera.getWorldDirection(_mirDir);
+  _mirDir.y *= -1;
+  _mirUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
+  _mirUp.y *= -1;
+  mirrorCam.position.copy(_mirPos);
+  mirrorCam.up.copy(_mirUp);
+  _mirTgt.copy(_mirPos).add(_mirDir);
+  mirrorCam.lookAt(_mirTgt);
+  mirrorCam.projectionMatrix.copy(camera.projectionMatrix);
+  mirrorCam.projectionMatrixInverse.copy(camera.projectionMatrixInverse);
+  mirrorCam.updateMatrixWorld(true);
+  mirrorCam.matrixWorldInverse.copy(mirrorCam.matrixWorld).invert();
+  _mirTM.set(
+    0.5, 0, 0, 0.5,
+    0, -0.5, 0, 0.5,
+    0, 0, 0.5, 0.5,
+    0, 0, 0, 1
+  ).multiply(mirrorCam.projectionMatrix)
+   .multiply(mirrorCam.matrixWorldInverse);
+  uMirrorTexMat.value.copy(_mirTM);
+  // plain forward render (no MRT): lambert bricks + shadows, floor hidden
+  floorMesh.visible = false;
+  renderer.setClearColor(bgColor, 1);
+  renderer.setRenderTarget(mirrorRT);
+  renderer.render(scene, mirrorCam);
+  floorMesh.visible = true;
+}
+const blackColor = new THREE.Color(0, 0, 0);
+const whiteColor = new THREE.Color(1, 1, 1);
+
+let loaderHidden = false;
+function animate() {
+  if (!loaderHidden) {
+    loaderHidden = true;
+    const l = document.getElementById('loader');
+    if (l) l.classList.add('hidden');
+  }
+  adaptiveSpawn(deltaTimeMS);
+  sndBudget = Math.min(4, sndBudget + deltaTimeMS * 0.004); // ~4 voices/sec
+  if (actx && sndMaster) {
+    sndMaster.gain.setTargetAtTime(
+      params.soundEnabled ? params.soundVolume * 0.9 : 0, actx.currentTime, 0.15);
+  }
+  if (calibrationDone && ++splashBadgeTimer >= 30) {
+    splashBadgeTimer = 0;
+    badge.textContent = `${badgeFinalText} · splashes ${splashCount}`;
+  }
+  if (camPaneDirty && pane && ++camPaneTimer >= 8) {
+    camPaneTimer = 0;
+    camPaneDirty = false;
+    pane.refresh();
+  }
+  const dtS = Math.min(1 / 30, deltaTimeMS / 1000);
+  updateAutoJump(dtS);
+  pbdStep(dtS);
+  updateSkins();
+  stepFloorField();
+}
+
+function render() {
+  // wet-floor mirror pass (fresh every frame, current camera)
+  if (params.wetFloor) renderMirror();
+
+  // MRT scene pass (alpha 0 => background id 0)
+  renderer.setMRT(sceneMRT);
+  renderer.setClearColor(bgColor, 0);
+  renderer.setRenderTarget(mrtRT);
+  renderer.render(scene, camera);
+  renderer.setMRT(null);
+
+  // SSS blur chain
+  if (!params.enableSSS) {
+    renderer.setClearColor(blackColor, 0);
+    renderer.setRenderTarget(sssBlurRTV);
+    renderer.clear();
+  } else {
+    renderer.setRenderTarget(sssBlurRTH); quadSSSH1.render(renderer);
+    renderer.setRenderTarget(sssBlurRTV); quadSSSV1.render(renderer);
+    renderer.setRenderTarget(sssBlurRTH); quadSSSH2.render(renderer);
+    renderer.setRenderTarget(sssBlurRTV); quadSSSV2.render(renderer);
+  }
+
+  // SSAO
+  if (params.enableSSAO) {
+    renderer.setRenderTarget(ssaoInternalRT); quadSSAO.render(renderer);
+    renderer.setRenderTarget(ssaoRT); quadSSAOBlur.render(renderer);
+  } else {
+    renderer.setClearColor(whiteColor, 1);
+    renderer.setRenderTarget(ssaoRT);
+    renderer.clear();
+  }
+
+  // composite into the persistent buffer (glass refracts last frame's image)
+  renderer.setClearColor(bgColor, 1);
+  renderer.setRenderTarget(compositeRT);
+  quadComposite.render(renderer);
+
+  // blit to screen (leaves the cleared depth buffer untouched)
+  if (!ringMeshes.length) {
+    renderer.setRenderTarget(null);
+    blitSourceTex.value = compositeRT.texture;
+    quadBlit.render(renderer);
+    return;
+  }
+
+  /* accumulating glass pass — rings refract rings. Back-to-front, each ring
+     renders over an accumulation that already holds the scene plus every
+     ring behind it, and its backdrop SAMPLES that accumulation. A ring never
+     samples an image containing itself (no self-ghosting). */
+  const camPos = camera.position;
+  const sorted = [...ringMeshes].sort((m1, m2) => {
+    const c1 = m1.userData.softBody.comPrev, c2 = m2.userData.softBody.comPrev;
+    return camPos.distanceToSquared(c2.x === 1e9 ? m2.position : c2)
+         - camPos.distanceToSquared(c1.x === 1e9 ? m1.position : c1);
+  });
+
+  // seed the accumulation with the composite + prime its depth once
+  renderer.autoClear = false;
+  renderer.setRenderTarget(glassAccumRT);
+  renderer.clear(true, true, false);
+  blitSourceTex.value = compositeRT.texture;
+  quadBlit.render(renderer);
+  for (const p of shadowProxies) p.visible = false;
+  scene.overrideMaterial = depthPrimeMat;
+  renderer.render(scene, camera);
+  scene.overrideMaterial = null;
+  for (const p of shadowProxies) p.visible = true;
+
+  for (const ring of sorted) {
+    // snapshot the accumulation (scene + rings behind) as this ring's backdrop
+    renderer.copyTextureToTexture(glassAccumRT.texture, glassBackdropRT.texture);
+    glassBackdropTex.value = glassBackdropRT.texture;
+    for (const m of ringMeshes) m.visible = m === ring;
+    renderer.setRenderTarget(glassAccumRT);
+    renderer.render(glassScene, camera);
+  }
+  for (const m of ringMeshes) m.visible = true;
+
+  // final accumulation to screen
+  renderer.setRenderTarget(null);
+  blitSourceTex.value = glassAccumRT.texture;
+  quadBlit.render(renderer);
+  renderer.autoClear = true;
+}
+
+renderer.setAnimationLoop((t) => {
+  deltaTimeMS = Math.max(0, t - lastFrameTime);
+  lastFrameTime = t;
+  syncParams();
+  applyOrbit();
+  animate();
+  render();
+});
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  resize
+// ═══════════════════════════════════════════════════════════════════ 
+
+function resize() {
+  renderer.setSize(document.documentElement.clientWidth, document.documentElement.clientHeight, false);
+  computeBufferSize();
+
+  camera.aspect = canvas.clientWidth / canvas.clientHeight;
+  camera.updateProjectionMatrix();
+
+  mrtRT.setSize(viewportSize.x, viewportSize.y);
+  glassAccumRT.setSize(viewportSize.x, viewportSize.y);
+  glassBackdropRT.setSize(viewportSize.x, viewportSize.y);
+
+  blurSize = viewportSize.clone().multiplyScalar(blurScale).floor();
+  sssBlurRTH.setSize(blurSize.x, blurSize.y);
+  sssBlurRTV.setSize(blurSize.x, blurSize.y);
+  sssH1.uRes.value.copy(viewportSize);   // full-res quirk kept from the original
+  sssV1.uRes.value.copy(blurSize);
+  sssH2.uRes.value.copy(blurSize);
+  sssV2.uRes.value.copy(blurSize);
+
+  ssaoSize = viewportSize.clone().multiplyScalar(ssaoScale).floor();
+  ssaoInternalRT.setSize(ssaoSize.x, ssaoSize.y);
+  ssaoRT.setSize(ssaoSize.x, ssaoSize.y);
+  uSSAORes.value.copy(ssaoSize);
+  uSSAOBlurRes.value.copy(ssaoSize);
+
+  compositeRT.setSize(viewportSize.x, viewportSize.y);
+  mirrorSize = viewportSize.clone().multiplyScalar(0.5).floor();
+  mirrorRT.setSize(mirrorSize.x, mirrorSize.y);
+}
+
+let resizeTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(resize, 100);
+});
+resize();
+</script>
+</body>
+</html>
