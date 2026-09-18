@@ -1,0 +1,1081 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Under Cover.</title>
+<link rel="stylesheet" href="styles/style.css"/>
+<script type="importmap">
+{
+  "imports": {
+    "three":        "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.webgpu.js",
+    "three/tsl":    "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.0/examples/jsm/",
+    "tweakpane": "https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="pane-container"></div>
+<div id="vignette"></div>
+<div id="title-block">
+  <span id="title-eyebrow">Tinker Day #45</span>
+  <span id="title-headline">Under cover.</span>
+  <p style="font-size: 14px;">
+    Blocks keep re-packing and rising<br>whilst cloth drapes over<br>them in real time (compute).<br><br>
+    Mousedown &amp; move to rotate.<br>Press R for a new subdivision.<br><br>
+    WebGPU · three.js · TSL<br />
+  </p>
+</div>
+<footer><a id="nav-prev-all" href="https://dasprinzip.com/tinker/index.html">&#8593; Checkout all days</a><a id="nav-prev" href="https://dasprinzip.com/tinker/day44/"><br>&larr; The Day Before.</a></footer>
+<div id="loader"><div class="spinner"></div><div class="loading-text">loading<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></div></div>
+<div id="tag"><span id="backend">…</span></div>
+<div class="err" id="err">Could not start the renderer. This demo needs WebGPU or WebGL2.</div>
+<script>
+  const __fail = (msg) => {
+    const l = document.getElementById('loader');
+    if (!l) return;
+    l.classList.remove('hidden');
+    const sp = l.querySelector('.spinner'); if (sp) sp.style.display = 'none';
+    const t = l.querySelector('.loading-text');
+    if (t) t.textContent = 'error — ' + msg;
+  };
+  window.addEventListener('error', e => __fail(e.message || 'script error'));
+  window.addEventListener('unhandledrejection', e =>
+    __fail(e.reason && e.reason.message ? e.reason.message : String(e.reason)));
+</script>
+
+<script type="module">
+import * as THREE from 'three/webgpu';
+import {
+  Fn, attribute, positionGeometry, positionWorld, transformNormalToView, varying,
+  vec2, vec3, float, abs, sign, sin, cos, max, min, mix, smoothstep, select, length, normalize, PI, color, uniform,
+  pass, mrt, normalView, screenUV, builtinAOContext,
+  instancedArray, storage, instanceIndex, vertexIndex, If, uint, int, texture, cross, negateOnBackSide, output, vec4, floor, fract, hash,
+  textureLoad, ivec2, reference, screenCoordinate, interleavedGradientNoise, vogelDiskSample, clamp,
+  mx_noise_float, positionViewDirection, dot, pow, oneMinus, time
+} from 'three/tsl';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { Pane } from 'tweakpane';
+import { ao } from 'three/addons/tsl/display/GTAONode.js';
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  config(s)
+// ═══════════════════════════════════════════════════════════════════ 
+
+const N          = 8;      // grid cells per side
+const GAP        = 0.07;   // gap between blocks (world units)
+const H_MIN      = 1.15;
+const H_MAX      = 4.4;
+const FLOOR_Y    = 0.0;
+const BAND_LO    = 0.42;   // orange band, world y
+const BAND_HI    = 0.80;
+const LOOP_S     = 12.0;   // seamless loop length (same as the source clip)
+const MAX_INST   = 256;
+const SEG        = 32;     // cube subdivisions → smooth arcs
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  tweakable param(s)
+// ═══════════════════════════════════════════════════════════════════ 
+
+const P = {
+  speed: 2.0,
+  aoRadius: 0.9, aoScale: 1.4, aoThickness: 1.0, aoSamples: 16, aoDistanceExponent: 1.0,
+  maxDepth: 6, splitP: 0.66, morph: 0.48, morphSpeed: 0.37, gap: 0.07,
+  roundH: 0.30, roundMax: 0.34, roundTop: 0.09,
+  glassRatio: 0.40, glassLift: 0.91, glassTint: '#be9eff',
+  transmission: 1.0, ior: 1.348, thickness: 2.93, roughness: 0.24,
+  attenuationColor: '#be9eff', attenuationDistance: 2.5, specularIntensity: 0.8, dispersion: 10.0,
+  solidRoughness: 0.62, glassShadows: true,
+  shadowLightSize: 0.012, shadowPenumbra: 14, shadowMinRadius: 1.0, shadowMaxRadius: 0.05,
+  exposure: 1.3, keyIntensity: 2.4, fillIntensity: 0.7, ambientIntensity: 1.5,
+  fogNear: 45, fogFar: 90,
+  wetFloor: true, wetAmount: 0.6, wetBlur: 0.15, wetDistort: 0.22, wetScale: 2.2, wetSpeed: 0.12, wetFresnel: 1.4, wetRough: 0.12, wetTint: '#d6c7f9',
+  floorColor: '#7a7a7a', bgColor: '#6c6c6c', tileSize: 2.5, seamWidth: 0.035, seamDark: 0.35, seamLight: 0.39, tileVariation: 0.20, floorRoughness: 0.55, tileScroll: 0.6, tileAngle: 0,
+  cloth: true, clothColor: '#b88018', clothRoughness: 0.85, clothMetalness: 0.0, clothSheen: 0.72, clothSheenRoughness: 0.7, clothSheenColor: '#ffffff',
+  clothClearcoat: 0.0, clothClearcoatRoughness: 0.4, clothIridescence: 0.0, clothOpacity: 0.71, clothRefraction: 0.02, clothGravity: -94, clothDamping: 0.998, clothTimeScale: 1.5,
+  clothStiffness: 0.85, clothIterations: 12, clothSubsteps: 4, clothThickness: 0.05,
+  clothWallDepth: 0.12, clothWallPush: 0.06, clothHome: 60, clothFriction: 0.55,
+};
+
+const COL_GRAY  = new THREE.Color('#6a6a6a');
+const COL_CORAL = new THREE.Color('#e07a60');
+const COL_BAND  = new THREE.Color('#f25a3a');
+const COL_DARK  = new THREE.Color('#404040');
+const COL_BG    = new THREE.Color('#6c6c6c');
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  utils: seeded RNG, 4D value noise (looped in time via a circle)
+// ═══════════════════════════════════════════════════════════════════ 
+
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function hash4(x, y, z, w) {
+  let h = (x * 374761393 + y * 668265263 + z * 2147483647 + w * 1274126177) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+const fade = t => t * t * t * (t * (t * 6 - 15) + 10);
+function noise4(x, y, z, w) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z), wi = Math.floor(w);
+  const xf = fade(x - xi), yf = fade(y - yi), zf = fade(z - zi), wf = fade(w - wi);
+  let res = 0;
+  for (let dw = 0; dw < 2; dw++) {
+    const cw = dw ? wf : 1 - wf;
+    for (let dz = 0; dz < 2; dz++) {
+      const cz = dz ? zf : 1 - zf;
+      for (let dy = 0; dy < 2; dy++) {
+        const cy = dy ? yf : 1 - yf;
+        for (let dx = 0; dx < 2; dx++) {
+          const cx = dx ? xf : 1 - xf;
+          res += cx * cy * cz * cw * hash4(xi + dx, yi + dy, zi + dz, wi + dw);
+        }
+      }
+    }
+  }
+  return res * 2 - 1; // -1..1
+}
+const easeInOut = t => t < 0 ? 0 : t > 1 ? 1 : (t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  setup
+// ═══════════════════════════════════════════════════════════════════ 
+
+const renderer = new THREE.WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(Math.max(2, innerWidth), Math.max(2, innerHeight));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFShadowMap;
+renderer.toneMapping = THREE.NoToneMapping;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = null;
+renderer.setClearColor(COL_BG, 0);
+scene.fog = new THREE.Fog(COL_BG, P.fogNear, P.fogFar);
+
+const camera = new THREE.PerspectiveCamera(26, innerWidth / innerHeight, 0.1, 1200);
+function frameCamera() {
+  const aspect = innerWidth / innerHeight;
+  camera.aspect = aspect;
+  const dist = 24 / Math.min(1, aspect / 0.85);
+  const dir = new THREE.Vector3(1, 0.78, 1).normalize();
+  camera.position.copy(dir.multiplyScalar(dist)).add(new THREE.Vector3(0, 0.9, 0));
+  camera.lookAt(0, 0.9, 0);
+  camera.updateProjectionMatrix();
+}
+frameCamera();
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.9, 0);
+controls.enableDamping = true;
+controls.enablePan = false;
+controls.minDistance = 10; controls.maxDistance = 45;
+controls.maxPolarAngle = Math.PI * 0.49;
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  light(s) — soft studio look
+// ═══════════════════════════════════════════════════════════════════ 
+
+const hemi = new THREE.HemisphereLight(0xffffff, 0x8a8a8a, P.ambientIntensity);
+hemi.layers.enable(1);
+scene.add(hemi);
+const key = new THREE.DirectionalLight(0xffffff, P.keyIntensity);
+key.position.set(-7, 16, 5);
+key.castShadow = true;
+key.shadow.mapSize.set(4096, 4096);
+key.shadow.camera.left = -10; key.shadow.camera.right = 10;
+key.shadow.camera.top = 10;   key.shadow.camera.bottom = -10;
+key.shadow.camera.near = 1;   key.shadow.camera.far = 40;
+key.shadow.bias = -0.0002;
+key.shadow.normalBias = 0.03;
+key.layers.enable(1);
+key.shadow.camera.layers.enable(1);
+scene.add(key);
+
+const uShLightSize = uniform(P.shadowLightSize), uShPenumbra = uniform(P.shadowPenumbra);
+const uShMinR = uniform(P.shadowMinRadius), uShMaxR = uniform(P.shadowMaxRadius);
+const BLOCKER_SAMPLES = 12, PCF_SAMPLES = 24;
+const pcssFilter = Fn(({ depthTexture, shadowCoord, shadow }) => {
+  const mapSize = reference('mapSize', 'vec2', shadow);
+  const texel = float(1.0).div(mapSize.x);
+  const phi = interleavedGradientNoise(screenCoordinate.xy).mul(6.28318530718);
+  const zr = shadowCoord.z;
+  const reversed = renderer.reversedDepthBuffer === true;
+
+  // the first use of the depth texture decides its sampler binding: make it a compare sample so the
+  // binding is a sampler_comparison (the textureLoad reads below don't use the sampler at all)
+  const center = texture(depthTexture, shadowCoord.xy).compare(zr).toVar();
+
+  // --- blocker search ---
+  const sum = float(0.0).toVar(), cnt = float(0.0).toVar();
+  for (let k = 0; k < BLOCKER_SAMPLES; k++) {
+    const uv = shadowCoord.xy.add(vogelDiskSample(k, BLOCKER_SAMPLES, phi).mul(uShLightSize));
+    const d = textureLoad(depthTexture, ivec2(uv.mul(mapSize))).r;
+    const isBlocker = reversed ? d.greaterThan(zr) : d.lessThan(zr);
+    If(isBlocker, () => { sum.addAssign(d); cnt.addAssign(1.0); });
+  }
+  const result = center.toVar();
+  If(cnt.greaterThan(0.0), () => {
+    const zb = sum.div(cnt);
+    const gap = reversed ? zb.sub(zr) : zr.sub(zb);                          // receiver–blocker distance in depth units
+    const radius = clamp(gap.mul(uShPenumbra), uShMinR.mul(texel), uShMaxR);
+    const lit = float(0.0).toVar();
+    for (let k = 0; k < PCF_SAMPLES; k++) {
+      const uv = shadowCoord.xy.add(vogelDiskSample(k, PCF_SAMPLES, phi).mul(radius));
+      lit.addAssign(texture(depthTexture, uv).compare(zr));
+    }
+    result.assign(lit.div(PCF_SAMPLES));
+  });
+  return result;
+});
+key.shadow.filterNode = pcssFilter;
+const fill = new THREE.DirectionalLight(0xffffff, P.fillIntensity);
+fill.position.set(10, 6, -4);
+fill.layers.enable(1);
+scene.add(fill);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  floor — procedural tile(s)
+// ═══════════════════════════════════════════════════════════════════ 
+
+const uFloorColor = uniform(new THREE.Color(P.floorColor));
+const uTileVel = uniform(new THREE.Vector2(Math.cos(P.tileAngle * Math.PI / 180) * P.tileScroll, Math.sin(P.tileAngle * Math.PI / 180) * P.tileScroll));
+const uTile = uniform(P.tileSize), uSeamW = uniform(P.seamWidth), uSeamDark = uniform(P.seamDark), uSeamLight = uniform(P.seamLight), uTileVar = uniform(P.tileVariation);
+const floorMat = new THREE.MeshStandardNodeMaterial({ roughness: P.floorRoughness, metalness: 0 });
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  wet floor — manual planar reflection
+// ═══════════════════════════════════════════════════════════════════ 
+
+const uWetAmount = uniform(P.wetFloor ? P.wetAmount : 0), uWetBlur = uniform(P.wetBlur), uWetDistort = uniform(P.wetDistort);
+const uWetScale = uniform(P.wetScale), uWetSpeed = uniform(P.wetSpeed), uWetFresnel = uniform(P.wetFresnel);
+const uWetTint = uniform(new THREE.Color(P.wetTint)), uWetRough = uniform(P.wetRough), uFloorRough = uniform(P.floorRoughness);
+const _mirDBS = new THREE.Vector2();
+renderer.getDrawingBufferSize(_mirDBS);
+let mirrorRT = new THREE.RenderTarget(Math.max(1, _mirDBS.x), Math.max(1, _mirDBS.y), { type: THREE.HalfFloatType });
+const mirrorTexNode = texture(mirrorRT.texture);
+// the transmission backdrop copy inside the mirror pass is sized from the drawing buffer, so the
+// mirror target must match it exactly; recreate (not resize) whenever the drawing buffer changes
+function syncMirrorTarget() {
+  renderer.getDrawingBufferSize(_mirDBS);
+  const w = Math.max(1, _mirDBS.x), h = Math.max(1, _mirDBS.y);
+  if (mirrorRT.width === w && mirrorRT.height === h) return;
+  mirrorRT.dispose();
+  mirrorRT = new THREE.RenderTarget(w, h, { type: THREE.HalfFloatType });
+  mirrorTexNode.value = mirrorRT.texture;
+}
+const mirrorCam = new THREE.PerspectiveCamera();
+mirrorCam.layers.enable(1);                                  // reflect the cloth too
+const uMirrorTexMat = uniform(new THREE.Matrix4());
+const _mirTM = new THREE.Matrix4();
+const _mirPos = new THREE.Vector3(), _mirDir = new THREE.Vector3(), _mirUp = new THREE.Vector3(), _mirTgt = new THREE.Vector3();
+
+const tileColor = Fn(() => {
+  // the tile pattern drifts across the (static) floor in one direction
+  const pw = vec2(positionWorld.x, positionWorld.z).sub(uTileVel.mul(time)).div(uTile);
+  const cell = floor(pw);
+  const f = fract(pw);
+  const dEdge = min(min(f.x, float(1.0).sub(f.x)), min(f.y, float(1.0).sub(f.y))).mul(uTile);   // distance to nearest seam, world units
+  const seam  = float(1.0).sub(smoothstep(float(0.0), uSeamW, dEdge));                          // dark groove
+  const bevel = float(1.0).sub(smoothstep(uSeamW, uSeamW.mul(3.0), dEdge)).mul(float(1.0).sub(seam)); // light lip beside it
+  // hash() casts its seed to uint → keep the seed positive and integer (negative cells all hashed to 0)
+  // (and small enough to stay exact in float32 — the floor spans ±400 tiles)
+  const h = hash(cell.x.add(512.0).add(cell.y.add(512.0).mul(1024.0)));
+  const shade = float(1.0).add(h.sub(0.5).mul(2.0).mul(uTileVar));
+  return uFloorColor.mul(shade).mul(float(1.0).sub(seam.mul(uSeamDark))).mul(float(1.0).add(bevel.mul(uSeamLight)));
+})();
+
+{
+  const rippleUV = vec2(positionWorld.x, positionWorld.z).mul(uWetScale);
+  const n1 = mx_noise_float(vec3(rippleUV, time.mul(uWetSpeed)));
+  const n2 = mx_noise_float(vec3(rippleUV.yx.mul(1.7), time.mul(uWetSpeed).add(11.0)));
+  const jitter  = mx_noise_float(vec3(vec2(positionWorld.x, positionWorld.z).mul(90.0), time.mul(0.5)));
+  const jitter2 = mx_noise_float(vec3(vec2(positionWorld.z, positionWorld.x).mul(90.0).add(31.7), time.mul(0.5)));
+  const mirClip = uMirrorTexMat.mul(vec4(positionWorld, 1.0));
+  const mirUV = mirClip.xy.div(mirClip.w)
+    .add(vec2(n1, n2).mul(uWetDistort.mul(0.06)))
+    .add(vec2(jitter, jitter2).mul(uWetBlur.mul(0.045)));
+  const rBase = mirrorTexNode.sample(mirUV);
+  const facing = abs(dot(normalView, positionViewDirection));
+  const fres = pow(oneMinus(facing), uWetFresnel);
+  // fade the mirror out with distance so the clamped texture edge never shows (fog takes over)
+  const radial = float(1.0).sub(smoothstep(float(28.0), float(55.0), length(vec2(positionWorld.x, positionWorld.z))));
+  const wet = fres.mul(uWetAmount).mul(radial).clamp(0.0, 1.0);
+  floorMat.colorNode = mix(tileColor, rBase.rgb.mul(uWetTint), wet);
+  floorMat.roughnessNode = mix(uFloorRough, uWetRough, uWetAmount.mul(radial).clamp(0.0, 1.0));
+}
+
+const floorMesh = new THREE.Mesh(new THREE.PlaneGeometry(2000, 2000), floorMat);
+floorMesh.rotation.x = -Math.PI / 2;
+floorMesh.position.y = FLOOR_Y;
+floorMesh.receiveShadow = true;
+scene.add(floorMesh);
+
+function renderMirror() {
+  if (uWetAmount.value <= 0) return;
+  syncMirrorTarget();
+  camera.updateMatrixWorld();
+  _mirPos.setFromMatrixPosition(camera.matrixWorld);
+  _mirPos.y = 2 * FLOOR_Y - _mirPos.y;
+  camera.getWorldDirection(_mirDir);
+  _mirDir.y *= -1;
+  _mirUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
+  _mirUp.y *= -1;
+  mirrorCam.position.copy(_mirPos);
+  mirrorCam.up.copy(_mirUp);
+  _mirTgt.copy(_mirPos).add(_mirDir);
+  mirrorCam.lookAt(_mirTgt);
+  mirrorCam.projectionMatrix.copy(camera.projectionMatrix);
+  mirrorCam.projectionMatrixInverse.copy(camera.projectionMatrixInverse);
+  mirrorCam.updateMatrixWorld(true);
+  mirrorCam.matrixWorldInverse.copy(mirrorCam.matrixWorld).invert();
+  _mirTM.set(
+    0.5, 0, 0, 0.5,
+    0, -0.5, 0, 0.5,
+    0, 0, 0.5, 0.5,
+    0, 0, 0, 1
+  ).multiply(mirrorCam.projectionMatrix).multiply(mirrorCam.matrixWorldInverse);
+  uMirrorTexMat.value.copy(_mirTM);
+  floorMesh.visible = false;
+  const prev = renderer.getRenderTarget();
+  renderer.setRenderTarget(mirrorRT);
+  renderer.render(scene, mirrorCam);
+  renderer.setRenderTarget(prev);
+  floorMesh.visible = true;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  instanced rounded block(s) — Geometry: a subdivided unit cube
+// ═══════════════════════════════════════════════════════════════════ 
+
+const uGlassLift = uniform(P.glassLift);
+const uGlassTint = uniform(new THREE.Color(P.glassTint));
+
+const F_XZ = 0.35;  // fraction of the cube param reserved for the flat part (rest → arc)
+const F_Y  = 0.60;  // fraction of the vertical param for the straight side (rest → top fillet)
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  vertex computation — position + local normal 
+// ═══════════════════════════════════════════════════════════════════ 
+
+function buildShape() {
+  const rect = attribute('iRect', 'vec4');
+  const anim = attribute('iAnim', 'vec4');
+  const t    = positionGeometry.mul(2.0);            // -1..1 on the cube
+
+  const half  = vec2(rect.z, rect.w).mul(0.5);
+  const h     = anim.x;
+  const rh    = anim.y;
+  const rv    = anim.z;
+  const yOff  = anim.w;
+  const inner = max(half.sub(rh), 0.0);
+
+  // --- 2D rounded-rect outline in XZ -------------------------------------
+  const txz = vec2(t.x, t.z);
+  const s   = sign(txz);
+  const a   = abs(txz);
+  const flat = s.mul(inner).mul(min(a.div(F_XZ), 1.0));
+  const th   = max(a.sub(F_XZ), 0.0).div(1.0 - F_XZ).mul(PI.mul(0.5));
+  const u    = s.mul(sin(th));
+  const ul   = length(u);
+  const n2   = select(ul.greaterThan(1e-4), u.div(ul), vec2(0.0));
+
+  // --- vertical: straight side, then quarter-circle fillet to the top -----
+  const ty   = t.y;
+  const yl   = min(ty.add(1.0).div(1.0 + F_Y), 1.0);
+  const thy  = max(ty.sub(F_Y), 0.0).div(1.0 - F_Y).mul(PI.mul(0.5));
+  const cy   = cos(thy), sy = sin(thy);
+
+  const p2 = flat.add(n2.mul(rh.sub(rv))).add(n2.mul(rv.mul(cy)));
+  const y  = mix(float(FLOOR_Y - 0.05), h.sub(rv), yl).add(rv.mul(sy)).add(yOff);
+
+  const pos = vec3(p2.x.add(rect.x), y, p2.y.add(rect.y)).toVar();
+
+  const nRaw = vec3(n2.x.mul(cy), sy, n2.y.mul(cy));
+  const nl   = length(nRaw);
+  const nrm  = select(nl.greaterThan(1e-4), nRaw.div(nl), vec3(0.0, 1.0, 0.0)).toVar();
+
+  return { pos, nrm };
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  fragment color — per-instance depth-gradient base
+// ═══════════════════════════════════════════════════════════════════ 
+
+function buildColor(lift = null, tint = null) {
+  return Fn(() => {
+    const base  = attribute('iColor', 'vec3');
+    const y     = positionWorld.y;
+    const e     = float(0.012);
+    const above = smoothstep(float(BAND_LO).sub(e), float(BAND_LO).add(e), y);
+    const band  = above.mul(float(1.0).sub(smoothstep(float(BAND_HI).sub(e), float(BAND_HI).add(e), y)));
+    const dark  = float(1.0).sub(above);
+    let c = mix(base, color(COL_DARK), dark);
+    c = mix(c, color(COL_BAND), band);
+    if (lift) c = mix(c, vec3(1.0), lift);
+    if (tint) c = c.mul(tint);
+    return c;
+  })();
+}
+
+function applyShape(material, lift, tint) {
+  const shape = buildShape();
+  const vNrm = varying(shape.nrm);
+  material.positionNode = shape.pos;
+  material.normalNode   = transformNormalToView(normalize(vNrm));
+  material.colorNode    = buildColor(lift, tint);
+  return vNrm;
+}
+
+function makeBatch(material, lift = null, tint = null) {
+  const geo = new THREE.BoxGeometry(1, 1, 1, SEG, SEG, SEG);
+  const iRect  = new THREE.InstancedBufferAttribute(new Float32Array(MAX_INST * 4), 4); // cx, cz, w, d
+  const iAnim  = new THREE.InstancedBufferAttribute(new Float32Array(MAX_INST * 4), 4); // h, rh, rv, yOff
+  const iColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_INST * 3), 3); // base albedo
+  for (const at of [iRect, iAnim, iColor]) at.setUsage(THREE.DynamicDrawUsage);
+  geo.setAttribute('iRect', iRect);
+  geo.setAttribute('iAnim', iAnim);
+  geo.setAttribute('iColor', iColor);
+  const vNrm = applyShape(material, lift, tint);
+  const mesh = new THREE.InstancedMesh(geo, material, MAX_INST);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  mesh.frustumCulled = false;
+  mesh.count = 0;
+  scene.add(mesh);
+  return { mesh, iRect, iAnim, iColor, vNrm, count: 0 };
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  opaque matte blocks
+// ═══════════════════════════════════════════════════════════════════ 
+
+const solidMat = new THREE.MeshStandardNodeMaterial({ roughness: P.solidRoughness, metalness: 0.0 });
+const solid = makeBatch(solidMat);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  transmissive glass blocks
+// ═══════════════════════════════════════════════════════════════════ 
+
+const glassMat = new THREE.MeshPhysicalNodeMaterial({
+  roughness: P.roughness, metalness: 0.0,
+  transmission: P.transmission, thickness: P.thickness, ior: P.ior,
+  attenuationDistance: P.attenuationDistance, attenuationColor: new THREE.Color(P.attenuationColor),
+  specularIntensity: P.specularIntensity, dispersion: P.dispersion,
+  side: THREE.FrontSide,
+});
+const glass = makeBatch(glassMat, uGlassLift, uGlassTint);
+glass.mesh.renderOrder = 1;
+const batches = [solid, glass];
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  animated BSP tree (after spite's "structure")
+//  https://github.com/spite
+// ═══════════════════════════════════════════════════════════════════ 
+
+const MAX_LEAVES = MAX_INST - 4;
+const nodes = [], leaves = [];
+const tmpC = new THREE.Color();
+
+class Node {
+  constructor(rnd, level, parent = null) {
+    this.rnd = rnd; this.level = level; this.parent = parent;
+    this.children = null;
+    this.splitDir = 0; this.split = 0.5;
+    this.seed = rnd(); this.phase = rnd() * Math.PI * 2; this.speed = 0.8 + 0.4 * rnd();
+    this.frac = { w: 1, d: 1 };
+    this.x = 0; this.z = 0; this.w = 1; this.d = 1;
+    this.h = H_MIN;
+    nodes.push(this);
+  }
+  subdivide(aspect) {
+    // keep subdividing with a probability that fades with depth
+    const keepGoing = this.level < P.maxDepth && nodes.length < MAX_LEAVES * 2
+      && Math.max(this.rnd(), 1 - this.level / P.maxDepth) >= (1 - P.splitP);
+    if (!keepGoing || leaves.length >= MAX_LEAVES) { leaves.push(this); return; }
+    // cut the longer side more often → nicer packing
+    this.splitDir = aspect > 1.5 ? 0 : aspect < 1 / 1.5 ? 1 : (this.rnd() < 0.5 ? 0 : 1);
+    const a = new Node(this.rnd, this.level + 1, this), b = new Node(this.rnd, this.level + 1, this);
+    this.children = [a, b];
+    const ca = this.splitDir === 0 ? aspect * 0.5 : aspect * 2;
+    a.subdivide(ca); b.subdivide(ca);
+  }
+  layout(x, z, w, d) {
+    this.x = x; this.z = z; this.w = w; this.d = d;
+    if (!this.children) return;
+    const [a, b] = this.children;
+    if (this.splitDir === 0) { const dw = w * this.split; a.layout(x, z, dw, d); b.layout(x + dw, z, w - dw, d); }
+    else                     { const dd = d * this.split; a.layout(x, z, w, dd); b.layout(x, z + dd, w, d - dd); }
+  }
+}
+
+let root = null;
+function buildTree(seed) {
+  nodes.length = 0; leaves.length = 0;
+  const rnd = mulberry32(seed);
+  root = new Node(rnd, 0);
+  root.subdivide(1);
+  for (const l of leaves) {
+    l.colorSeed = rnd();
+    l.hScale = 1;
+  }
+}
+let treeSeed = 4242;
+buildTree(treeSeed);
+
+function update(tNow) {
+  // looped time → point on a circle for the noise's 3rd/4th dims
+  const phase = (tNow % LOOP_S) / LOOP_S * Math.PI * 2;
+  const lx = Math.cos(phase) * 1.35 + 7.3, lw = Math.sin(phase) * 1.35 + 3.1;
+
+  // 1) animate split ratios
+  for (const n of nodes) {
+    if (!n.children) continue;
+    const v = noise4(tNow * P.morphSpeed * n.speed + n.phase, n.seed * 37.1, lx * 0.3, lw * 0.3);
+    n.split = 0.5 + P.morph * v;
+  }
+  root.layout(-N / 2, -N / 2, N, N);
+
+  // 2) write instances
+  for (const bt of batches) bt.count = 0;
+  for (const b of leaves) {
+    const bt = b.colorSeed < P.glassRatio ? glass : solid;
+    const { iRect, iAnim, iColor } = bt;
+    const count = bt.count;
+    const wEff = Math.max(b.w - P.gap, 0.12), dEff = Math.max(b.d - P.gap, 0.12);
+    const cx = b.x + b.w / 2, cz = b.z + b.d / 2;
+    const mn = Math.min(wEff, dEff);
+    const rh = Math.min(P.roundH * mn, P.roundMax);
+    const rv = Math.min(P.roundTop, rh * 0.6);
+    // height: smooth noise over the field, slightly lower for big slabs
+    const n = noise4(cx * 0.42 + 11.7, cz * 0.42 + 4.2, lx, lw) * 0.5 + 0.5;
+    const nn = THREE.MathUtils.clamp(0.72 * n + 0.28 * b.seed, 0, 1);
+    const area = wEff * dEff;
+    const hScale = 1.0 - 0.12 * Math.log2(Math.max(1, area));
+    const h = (H_MIN + (H_MAX - H_MIN) * nn * nn) * hScale;
+    b.h += (h - b.h) * 0.1;
+    // depth gradient: camera sits at +x,+z → far corner (-x,-z) is coral
+    const u = (cx + cz) / N;
+    let g = THREE.MathUtils.clamp((0.18 - u) / 0.95, 0, 1);
+    g = g * g * (3 - 2 * g);
+    tmpC.copy(COL_GRAY).lerp(COL_CORAL, g);
+    const jitter = 0.94 + 0.12 * b.colorSeed;
+
+    const k4 = count * 4, k3 = count * 3;
+    iRect.array[k4] = cx; iRect.array[k4 + 1] = cz; iRect.array[k4 + 2] = wEff; iRect.array[k4 + 3] = dEff;
+    iAnim.array[k4] = b.h; iAnim.array[k4 + 1] = rh; iAnim.array[k4 + 2] = rv; iAnim.array[k4 + 3] = 0;
+    iColor.array[k3] = tmpC.r * jitter; iColor.array[k3 + 1] = tmpC.g * jitter; iColor.array[k3 + 2] = tmpC.b * jitter;
+    bt.count++;
+    if (bt.count >= MAX_INST) break;
+  }
+  for (const bt of batches) {
+    bt.iRect.needsUpdate = bt.iAnim.needsUpdate = bt.iColor.needsUpdate = true;
+    bt.mesh.count = bt.count;
+  }
+  stats.leaves = leaves.length; stats.glass = glass.count;
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  cloth — a WebGPU compute port of Verlet integration + Jacobi
+//  spring relaxation
+// ═══════════════════════════════════════════════════════════════════ 
+
+const CW = 72, CH = 136, CDX = 0.077;                  // particles along x / z, spacing (≈5.5 × 10.4 units)
+const CN = CW * CH;
+const CLOTH_X0 = -N / 2 - 0.9;                         // cloth spans x ∈ [-4.9, 0.6] → over the left half, reaching past the middle
+const CLOTH_Z0 = -(CH - 1) * CDX / 2;
+const HF_R = 192, HF_SIZE = N + 3, HF_ORIGIN = -HF_SIZE / 2;   // heightfield covers [-5.5, 5.5]²
+const CLOTH_DROP_Y = H_MAX + 0.4;
+
+const clothInit = new Float32Array(CN * 3);
+for (let iy = 0; iy < CH; iy++) for (let ix = 0; ix < CW; ix++) {
+  const k = (iy * CW + ix) * 3;
+  clothInit[k] = CLOTH_X0 + ix * CDX; clothInit[k + 1] = CLOTH_DROP_Y; clothInit[k + 2] = CLOTH_Z0 + iy * CDX;
+}
+const cPos  = instancedArray(clothInit.slice(), 'vec3');
+const cPos2 = instancedArray(clothInit.slice(), 'vec3');
+const cPrev = instancedArray(clothInit.slice(), 'vec3');
+const cNrm  = instancedArray(CN, 'vec3');
+const cOrg  = instancedArray(clothInit.slice(), 'vec3');   // rest layout — a weak XZ spring toward it keeps the sheet from bunching up over time
+
+const hfData = new Float32Array(HF_R * HF_R);
+const hfDil = new Float32Array(HF_R * HF_R);
+const hfHalf = new Uint16Array(HF_R * HF_R);          // r16float is filterable everywhere; r32float is not
+const hfTex = new THREE.DataTexture(hfHalf, HF_R, HF_R, THREE.RedFormat, THREE.HalfFloatType);
+hfTex.minFilter = hfTex.magFilter = THREE.LinearFilter;
+hfTex.needsUpdate = true;
+
+const uDt = uniform(1 / 180), uGravity = uniform(P.clothGravity), uDamp = uniform(P.clothDamping);
+const uStiff = uniform(P.clothStiffness), uThick = uniform(P.clothThickness), uFriction = uniform(P.clothFriction), uHome = uniform(P.clothHome);
+
+const heightAt = Fn(([p]) => {
+  const uv = vec2(p.x, p.z).sub(HF_ORIGIN).div(HF_SIZE);
+  return texture(hfTex, uv).level(0).r;
+});
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  collision against the block heightfield
+// ═══════════════════════════════════════════════════════════════════ 
+
+const HF_TEXEL = HF_SIZE / HF_R;
+const uWallDepth = uniform(P.clothWallDepth), uWallPush = uniform(P.clothWallPush);
+const collide = Fn(([p]) => {
+  const out = p.toVar();
+  const h0 = heightAt(p);
+  const floorY = max(h0, 0.0).add(uThick);
+  const pen = floorY.sub(p.y);
+  If(pen.greaterThan(0.0), () => {
+    const e = float(HF_TEXEL * 1.5);
+    const hx = heightAt(p.add(vec3(e, 0.0, 0.0))).sub(heightAt(p.sub(vec3(e, 0.0, 0.0))));
+    const hz = heightAt(p.add(vec3(0.0, 0.0, e))).sub(heightAt(p.sub(vec3(0.0, 0.0, e))));
+    const g = vec2(hx, hz).div(e.mul(2.0));
+    const gl = length(g);
+    If(gl.greaterThan(3.0).and(pen.greaterThan(uWallDepth)), () => {
+      const dir = g.div(gl);
+      out.x.subAssign(dir.x.mul(uWallPush));
+      out.z.subAssign(dir.y.mul(uWallPush));
+      out.y.assign(p.y.add(min(pen, 0.02)));
+    }).Else(() => {
+      out.y.assign(floorY);
+    });
+  });
+  return out;
+});
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  verlet step
+// ═══════════════════════════════════════════════════════════════════ 
+
+const kIntegrate = Fn(() => {
+  const i = instanceIndex;
+  const p = cPos.element(i).toVar();
+  const q = cPrev.element(i);
+  const vel = p.sub(q).mul(uDamp);
+  const org = cOrg.element(i);
+  const dt2 = uDt.mul(uDt);
+  const accel = vec3(org.x.sub(p.x).mul(uHome), uGravity, org.z.sub(p.z).mul(uHome));
+  const np = p.add(vel).add(accel.mul(dt2));
+  cPrev.element(i).assign(p);
+  cPos.element(i).assign(collide(np));
+})().compute(CN);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  Jacobi relaxation over structural / shear / bend springs
+//  ping-ponging between two buffers so reads never race with writes
+// ═══════════════════════════════════════════════════════════════════ 
+
+const SPRINGS = [];                                          // [dx, dy, rest length, weight]
+for (const [ox, oy] of [[1,0],[-1,0],[0,1],[0,-1]])          SPRINGS.push([ox, oy, CDX, 1.0]);              // structural
+for (const [ox, oy] of [[1,1],[-1,1],[1,-1],[-1,-1]])        SPRINGS.push([ox, oy, CDX * Math.SQRT2, 0.6]); // shear
+for (const [ox, oy] of [[2,0],[-2,0],[0,2],[0,-2]])          SPRINGS.push([ox, oy, CDX * 2, 0.7]);          // bend
+
+function makeRelax(src, dst) {
+  return Fn(() => {
+    const i  = instanceIndex;
+    const ix = int(i.mod(uint(CW))), iy = int(i.div(uint(CW)));
+    const p    = src.element(i).toVar();
+    const disp = vec3(0.0).toVar();
+    const cnt  = float(0.0).toVar();
+    for (const [ox, oy, rest, wgt] of SPRINGS) {
+      const nx = ix.add(int(ox)), ny = iy.add(int(oy));
+      const ok = nx.greaterThanEqual(int(0)).and(nx.lessThan(int(CW))).and(ny.greaterThanEqual(int(0))).and(ny.lessThan(int(CH)));
+      If(ok, () => {
+        const j  = uint(ny.mul(int(CW)).add(nx));
+        const d  = src.element(j).sub(p);
+        const L  = length(d);
+        If(L.greaterThan(1e-6), () => { disp.addAssign(d.mul(L.sub(float(rest)).div(L)).mul(0.5 * wgt)); });
+        cnt.addAssign(wgt);
+      });
+    }
+    p.addAssign(disp.mul(uStiff).div(max(cnt, 1e-3)));
+    dst.element(i).assign(collide(p));
+  })().compute(CN);
+}
+const kRelaxAB = makeRelax(cPos, cPos2);
+const kRelaxBA = makeRelax(cPos2, cPos);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  friction: particles resting on a surface lose tangential velocity
+// ═══════════════════════════════════════════════════════════════════ 
+
+const kFriction = Fn(() => {
+  const i = instanceIndex;
+  const p = cPos.element(i);
+  const q = cPrev.element(i).toVar();
+  const floorY = max(heightAt(p), 0.0).add(uThick);
+  If(p.y.lessThanEqual(floorY.add(0.003)), () => {
+    cPrev.element(i).assign(vec3(mix(q.x, p.x, uFriction), q.y, mix(q.z, p.z, uFriction)));
+  });
+})().compute(CN);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  vertex normals from central differences
+// ═══════════════════════════════════════════════════════════════════ 
+
+const kNormals = Fn(() => {
+  const i  = instanceIndex;
+  const ix = int(i.mod(uint(CW))), iy = int(i.div(uint(CW)));
+  const ixm = max(ix.sub(int(1)), int(0)), ixp = min(ix.add(int(1)), int(CW - 1));
+  const iym = max(iy.sub(int(1)), int(0)), iyp = min(iy.add(int(1)), int(CH - 1));
+  const tx = cPos.element(uint(iy.mul(int(CW)).add(ixp))).sub(cPos.element(uint(iy.mul(int(CW)).add(ixm))));
+  const tz = cPos.element(uint(iyp.mul(int(CW)).add(ix))).sub(cPos.element(uint(iym.mul(int(CW)).add(ix))));
+  cNrm.element(i).assign(normalize(cross(tz, tx)));
+})().compute(CN);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  cloth mesh: a W×H grid whose vertices read 
+//  straight from the storage buffers
+// ═══════════════════════════════════════════════════════════════════
+
+const clothGeo = new THREE.BufferGeometry();
+clothGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(CN * 3), 3));
+{
+  const idx = [];
+  for (let iy = 0; iy < CH - 1; iy++) for (let ix = 0; ix < CW - 1; ix++) {
+    const a = iy * CW + ix, b = a + 1, c = a + CW, d = c + 1;
+    idx.push(a, c, b, b, c, d);
+  }
+  clothGeo.setIndex(idx);
+}
+const cPosRead = storage(cPos.value, 'vec3', CN).toReadOnly();
+const cNrmRead = storage(cNrm.value, 'vec3', CN).toReadOnly();
+const clothMat = new THREE.MeshPhysicalNodeMaterial({
+  color: P.clothColor, roughness: P.clothRoughness, metalness: P.clothMetalness, side: THREE.DoubleSide,
+  sheen: P.clothSheen, sheenRoughness: P.clothSheenRoughness, sheenColor: new THREE.Color(P.clothSheenColor),
+  clearcoat: P.clothClearcoat, clearcoatRoughness: P.clothClearcoatRoughness,
+  iridescence: P.clothIridescence,
+});
+clothMat.positionNode = cPosRead.element(vertexIndex);
+const vClothNrm = varying(cNrmRead.element(vertexIndex));            // fetch per-vertex, interpolate — never index a buffer per-fragment
+clothMat.normalNode   = negateOnBackSide(transformNormalToView(normalize(vClothNrm)));
+const clothMesh = new THREE.Mesh(clothGeo, clothMat);
+clothMesh.castShadow = clothMesh.receiveShadow = true;
+clothMesh.frustumCulled = false;
+clothMesh.layers.set(1);                                    // rendered in its own pass, composited over the scene
+scene.add(clothMesh);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  bake the block tops into the heightfield (CPU, once per frame)
+// ═══════════════════════════════════════════════════════════════════
+
+function bakeHeightfield() {
+  hfData.fill(0);
+  const inv = HF_R / HF_SIZE;
+  for (const b of leaves) {
+    const wEff = Math.max(b.w - P.gap, 0.12), dEff = Math.max(b.d - P.gap, 0.12);
+    const cx = b.x + b.w / 2, cz = b.z + b.d / 2;
+    const x0 = Math.max(0, Math.floor((cx - wEff / 2 - HF_ORIGIN) * inv)), x1 = Math.min(HF_R - 1, Math.ceil((cx + wEff / 2 - HF_ORIGIN) * inv));
+    const z0 = Math.max(0, Math.floor((cz - dEff / 2 - HF_ORIGIN) * inv)), z1 = Math.min(HF_R - 1, Math.ceil((cz + dEff / 2 - HF_ORIGIN) * inv));
+    const h = b.h;                                       // flat top; the fillet is narrower than a heightfield texel
+    for (let z = z0; z <= z1; z++) { const row = z * HF_R; for (let x = x0; x <= x1; x++) if (hfData[row + x] < h) hfData[row + x] = h; }
+  }
+  // dilate by one texel (3×3 max) so the bilinear slope at block edges starts outside the geometry,
+  // otherwise sharp block edges cut through the cloth where it ramps down
+  hfDil.set(hfData);
+  for (let z = 1; z < HF_R - 1; z++) {
+    for (let x = 1; x < HF_R - 1; x++) {
+      const i = z * HF_R + x;
+      let m = hfData[i];
+      const a = hfData[i - 1], b = hfData[i + 1], c = hfData[i - HF_R], d = hfData[i + HF_R];
+      const e = hfData[i - HF_R - 1], f = hfData[i - HF_R + 1], g = hfData[i + HF_R - 1], k = hfData[i + HF_R + 1];
+      if (a > m) m = a; if (b > m) m = b; if (c > m) m = c; if (d > m) m = d;
+      if (e > m) m = e; if (f > m) m = f; if (g > m) m = g; if (k > m) m = k;
+      hfDil[i] = m;
+    }
+  }
+  for (let i = 0; i < hfDil.length; i++) hfHalf[i] = THREE.DataUtils.toHalfFloat(hfDil[i]);
+  hfTex.needsUpdate = true;
+}
+
+let clothEnabled = false, isWebGPU = false;
+function stepCloth(dtFrame) {
+  if (!clothEnabled) return;
+  bakeHeightfield();
+  const sub = P.clothSubsteps, iters = P.clothIterations + (P.clothIterations % 2); // even → ends in cPos
+  uDt.value = Math.min(dtFrame, 1 / 30) * P.clothTimeScale / sub;
+  for (let s = 0; s < sub; s++) {
+    renderer.compute(kIntegrate);
+    for (let k = 0; k < iters; k += 2) { renderer.compute(kRelaxAB); renderer.compute(kRelaxBA); }
+    renderer.compute(kFriction);
+  }
+  renderer.compute(kNormals);
+}
+function resetCloth() {
+  for (const buf of [cPos, cPos2, cPrev]) { buf.value.array.set(clothInit); buf.value.needsUpdate = true; }
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  postpro: GTAO pre-pass → scene pass (AO applied inside lighting) 
+//  → cloth pass → composite 
+// ═══════════════════════════════════════════════════════════════════
+
+const clothLayers = new THREE.Layers(); clothLayers.set(1);
+const uClothOpacity = uniform(P.clothOpacity), uClothRefract = uniform(P.clothRefraction);
+const uBgColor = uniform(new THREE.Color(P.bgColor));
+const uExposure = uniform(P.exposure);
+let pipeline = null, post = null;
+
+function buildPipeline() {
+  if (post) { for (const ps of [post.prePass, post.scenePass, post.clothPass]) ps.dispose(); }
+
+  const prePass = pass(scene, camera, { samples: 0 });           // normals + depth (no MSAA: GTAO reads depth directly)
+  prePass.setMRT(mrt({ output: normalView }));
+  const scenePass = pass(scene, camera);                         // beauty
+  const aoPass = ao(prePass.getTextureNode('depth'), prePass.getTextureNode(), camera);
+  aoPass.radius.value = P.aoRadius;
+  aoPass.scale.value = P.aoScale;
+  aoPass.thickness.value = P.aoThickness;
+  aoPass.samples.value = P.aoSamples;
+  aoPass.distanceExponent.value = P.aoDistanceExponent;
+  scenePass.contextNode = builtinAOContext(aoPass.getTextureNode().sample(screenUV).r);
+
+  const clothPass = pass(scene, camera, { samples: 0 });         // cloth alone: colour + normal + depth
+  clothPass.setLayers(clothLayers);
+  clothPass.setMRT(mrt({ output, normal: normalView }));
+
+  const sceneTex = scenePass.getTextureNode();
+  const clothTex = clothPass.getTextureNode('output');
+  const clothNrmTex = clothPass.getTextureNode('normal');
+  const clothDepth = clothPass.getTextureNode('depth');
+  const sceneDepth = prePass.getTextureNode('depth');
+  const reversedDepth = renderer.reversedDepthBuffer === true;
+  const composite = Fn(() => {
+    const c  = clothTex.sample(screenUV);
+    const dC = clothDepth.sample(screenUV).r;
+    const dS = sceneDepth.sample(screenUV).r;
+    const inFront = reversedDepth ? dC.greaterThan(dS) : dC.lessThan(dS);
+    const cover = c.a.mul(select(inFront, 1.0, 0.0)).mul(uClothOpacity);
+    const n = clothNrmTex.sample(screenUV).xyz;
+    const uvR = screenUV.add(n.xy.mul(uClothRefract).mul(cover));
+    const sc4 = sceneTex.sample(uvR);                       // premultiplied: rgb already scaled by alpha
+    const sc = uBgColor.mul(float(1.0).sub(sc4.a)).add(sc4.rgb);
+    return vec4(mix(sc, c.rgb, cover).mul(uExposure), 1.0);
+  })();
+
+  if (!pipeline) pipeline = new THREE.RenderPipeline(renderer);
+  pipeline.outputNode = composite;
+  pipeline.needsUpdate = true;
+  post = { prePass, scenePass, clothPass, aoPass };
+}
+buildPipeline();
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  tweakpane
+// ═══════════════════════════════════════════════════════════════════
+
+function setFeature(mat, key, value) {
+  const was = mat[key] > 0;
+  mat[key] = value;
+  if (was !== (value > 0)) mat.needsUpdate = true;
+}
+const pane = new Pane({ container: document.getElementById('pane-container'), title: 'rounded blocks', expanded: true });
+const stats = { leaves: 0, glass: 0 };
+const fS = pane.addFolder({ title: 'structure' });
+fS.addBinding(P, 'maxDepth', { min: 1, max: 9, step: 1, label: 'subdivisions' }).on('change', () => buildTree(treeSeed));
+fS.addBinding(P, 'splitP',   { min: 0, max: 1, step: 0.01, label: 'split prob' }).on('change', () => buildTree(treeSeed));
+fS.addBinding(stats, 'leaves', { readonly: true, label: 'blocks' });
+fS.addButton({ title: 'new tree (R)' }).on('click', () => { treeSeed = (treeSeed * 1103515245 + 12345) >>> 0; buildTree(treeSeed); });
+fS.addBinding(P, 'morph',      { min: 0, max: 0.48, step: 0.01, label: 'morph amount' });
+fS.addBinding(P, 'morphSpeed', { min: 0, max: 0.6, step: 0.01, label: 'morph speed' });
+fS.addBinding(P, 'speed',      { min: 0, max: 3, step: 0.05, label: 'time scale' });
+fS.addBinding(P, 'gap',        { min: 0, max: 0.4, step: 0.01 });
+const fR = pane.addFolder({ title: 'rounding', expanded: false });
+fR.addBinding(P, 'roundH',   { min: 0, max: 0.5, step: 0.01, label: 'radius × side' });
+fR.addBinding(P, 'roundMax', { min: 0, max: 1.5, step: 0.01, label: 'radius max' });
+fR.addBinding(P, 'roundTop', { min: 0, max: 0.5, step: 0.01, label: 'top fillet' });
+const fG = pane.addFolder({ title: 'glass (MeshPhysicalNodeMaterial)' });
+fG.addBinding(P, 'glassRatio', { min: 0, max: 1, step: 0.01, label: 'glass share' });
+fG.addBinding(P, 'transmission', { min: 0, max: 1, step: 0.01 }).on('change', e => setFeature(glassMat, 'transmission', e.value));
+fG.addBinding(P, 'ior', { min: 1, max: 2.333, step: 0.001 }).on('change', e => glassMat.ior = e.value);
+fG.addBinding(P, 'thickness', { min: 0, max: 5, step: 0.01 }).on('change', e => glassMat.thickness = e.value);
+fG.addBinding(P, 'roughness', { min: 0, max: 1, step: 0.01 }).on('change', e => glassMat.roughness = e.value);
+fG.addBinding(P, 'dispersion', { min: 0, max: 10, step: 0.05 }).on('change', e => setFeature(glassMat, 'dispersion', e.value));
+fG.addBinding(P, 'specularIntensity', { min: 0, max: 1, step: 0.01, label: 'specular' }).on('change', e => glassMat.specularIntensity = e.value);
+fG.addBinding(P, 'glassTint', { label: 'surface tint' }).on('change', e => uGlassTint.value.set(e.value));
+fG.addBinding(P, 'glassLift', { min: 0, max: 1, step: 0.01, label: 'lighten' }).on('change', e => uGlassLift.value = e.value);
+fG.addBinding(P, 'attenuationColor', { label: 'inside color' }).on('change', e => glassMat.attenuationColor.set(e.value));
+fG.addBinding(P, 'attenuationDistance', { min: 0.05, max: 10, step: 0.05, label: 'inside dist' }).on('change', e => glassMat.attenuationDistance = e.value);
+fG.addBinding(P, 'glassShadows', { label: 'cast shadows' }).on('change', e => glass.mesh.castShadow = e.value);
+const fA = pane.addFolder({ title: 'ambient occlusion (GTAO)' });
+fA.addBinding(P, 'aoScale',     { min: 0, max: 3, step: 0.05, label: 'intensity' }).on('change', e => post.aoPass.scale.value = e.value);
+fA.addBinding(P, 'aoRadius',    { min: 0.05, max: 3, step: 0.01, label: 'radius' }).on('change', e => post.aoPass.radius.value = e.value);
+fA.addBinding(P, 'aoThickness', { min: 0.05, max: 3, step: 0.01, label: 'thickness' }).on('change', e => post.aoPass.thickness.value = e.value);
+fA.addBinding(P, 'aoDistanceExponent', { min: 0.1, max: 4, step: 0.05, label: 'falloff exp' }).on('change', e => post.aoPass.distanceExponent.value = e.value);
+fA.addBinding(P, 'aoSamples',   { min: 4, max: 32, step: 1, label: 'samples' }).on('change', e => post.aoPass.samples.value = e.value);
+const fC = pane.addFolder({ title: 'cloth (sheen port, compute)' });
+fC.addBinding(P, 'cloth', { label: 'enabled' }).on('change', e => { clothMesh.visible = e.value; clothEnabled = e.value && isWebGPU; });
+fC.addButton({ title: 'drop again' }).on('click', resetCloth);
+const fCM = fC.addFolder({ title: 'material (MeshPhysicalNodeMaterial)' });
+fCM.addBinding(P, 'clothColor', { label: 'color' }).on('change', e => clothMat.color.set(e.value));
+fCM.addBinding(P, 'clothRoughness', { min: 0, max: 1, step: 0.01, label: 'roughness' }).on('change', e => clothMat.roughness = e.value);
+fCM.addBinding(P, 'clothMetalness', { min: 0, max: 1, step: 0.01, label: 'metalness' }).on('change', e => clothMat.metalness = e.value);
+fCM.addBinding(P, 'clothSheen', { min: 0, max: 1, step: 0.01, label: 'sheen' }).on('change', e => setFeature(clothMat, 'sheen', e.value));
+fCM.addBinding(P, 'clothSheenRoughness', { min: 0, max: 1, step: 0.01, label: 'sheen rough' }).on('change', e => clothMat.sheenRoughness = e.value);
+fCM.addBinding(P, 'clothSheenColor', { label: 'sheen color' }).on('change', e => clothMat.sheenColor.set(e.value));
+fCM.addBinding(P, 'clothClearcoat', { min: 0, max: 1, step: 0.01, label: 'clearcoat' }).on('change', e => setFeature(clothMat, 'clearcoat', e.value));
+fCM.addBinding(P, 'clothClearcoatRoughness', { min: 0, max: 1, step: 0.01, label: 'clearcoat rough' }).on('change', e => clothMat.clearcoatRoughness = e.value);
+fCM.addBinding(P, 'clothIridescence', { min: 0, max: 1, step: 0.01, label: 'iridescence' }).on('change', e => setFeature(clothMat, 'iridescence', e.value));
+fCM.addBinding(P, 'clothOpacity', { min: 0, max: 1, step: 0.01, label: 'opacity' }).on('change', e => uClothOpacity.value = e.value);
+fCM.addBinding(P, 'clothRefraction', { min: 0, max: 0.1, step: 0.001, label: 'refraction' }).on('change', e => uClothRefract.value = e.value);
+fC.addBinding(P, 'clothGravity', { min: -120, max: 0, step: 0.5, label: 'gravity' }).on('change', e => uGravity.value = e.value);
+fC.addBinding(P, 'clothTimeScale', { min: 0.25, max: 4, step: 0.05, label: 'sim speed' });
+fC.addBinding(P, 'clothDamping', { min: 0.98, max: 1, step: 0.0005, label: 'damping' }).on('change', e => uDamp.value = e.value);
+fC.addBinding(P, 'clothStiffness', { min: 0.2, max: 1.0, step: 0.01, label: 'stiffness' }).on('change', e => uStiff.value = e.value);
+fC.addBinding(P, 'clothIterations', { min: 2, max: 24, step: 2, label: 'iterations' });
+fC.addBinding(P, 'clothSubsteps', { min: 1, max: 6, step: 1, label: 'substeps' });
+fC.addBinding(P, 'clothThickness', { min: 0.0, max: 0.2, step: 0.005, label: 'thickness' }).on('change', e => uThick.value = e.value);
+fC.addBinding(P, 'clothFriction', { min: 0, max: 1, step: 0.01, label: 'friction' }).on('change', e => uFriction.value = e.value);
+fC.addBinding(P, 'clothHome', { min: 0, max: 400, step: 1, label: 'shape memory' }).on('change', e => uHome.value = e.value);
+fC.addBinding(P, 'clothWallDepth', { min: 0.02, max: 0.5, step: 0.01, label: 'wall depth' }).on('change', e => uWallDepth.value = e.value);
+fC.addBinding(P, 'clothWallPush', { min: 0.01, max: 0.2, step: 0.005, label: 'wall push' }).on('change', e => uWallPush.value = e.value);
+const fL = pane.addFolder({ title: 'lighting', expanded: false });
+fL.addBinding(P, 'exposure', { min: 0.3, max: 3, step: 0.01 }).on('change', e => uExposure.value = e.value);
+fL.addBinding(P, 'keyIntensity', { min: 0, max: 6, step: 0.05, label: 'key light' }).on('change', e => key.intensity = e.value);
+fL.addBinding(P, 'fillIntensity', { min: 0, max: 3, step: 0.05, label: 'fill light' }).on('change', e => fill.intensity = e.value);
+fL.addBinding(P, 'ambientIntensity', { min: 0, max: 4, step: 0.05, label: 'ambient' }).on('change', e => hemi.intensity = e.value);
+const fSh = pane.addFolder({ title: 'shadows (PCSS)', expanded: false });
+fSh.addBinding(P, 'shadowLightSize', { min: 0.001, max: 0.05, step: 0.001, label: 'light size' }).on('change', e => uShLightSize.value = e.value);
+fSh.addBinding(P, 'shadowPenumbra', { min: 0, max: 60, step: 0.5, label: 'penumbra' }).on('change', e => uShPenumbra.value = e.value);
+fSh.addBinding(P, 'shadowMinRadius', { min: 0.5, max: 6, step: 0.1, label: 'min blur (texels)' }).on('change', e => uShMinR.value = e.value);
+fSh.addBinding(P, 'shadowMaxRadius', { min: 0.005, max: 0.15, step: 0.001, label: 'max blur (uv)' }).on('change', e => uShMaxR.value = e.value);
+const fW = pane.addFolder({ title: 'wet floor', expanded: false });
+fW.addBinding(P, 'wetFloor', { label: 'enabled' }).on('change', e => uWetAmount.value = e.value ? P.wetAmount : 0);
+fW.addBinding(P, 'wetAmount', { min: 0, max: 1, step: 0.01, label: 'reflectivity' }).on('change', e => { if (P.wetFloor) uWetAmount.value = e.value; });
+fW.addBinding(P, 'wetBlur', { min: 0, max: 1.5, step: 0.01, label: 'blurriness' }).on('change', e => uWetBlur.value = e.value);
+fW.addBinding(P, 'wetDistort', { min: 0, max: 1.5, step: 0.01, label: 'ripple distort' }).on('change', e => uWetDistort.value = e.value);
+fW.addBinding(P, 'wetScale', { min: 0.3, max: 8, step: 0.05, label: 'ripple scale' }).on('change', e => uWetScale.value = e.value);
+fW.addBinding(P, 'wetSpeed', { min: 0, max: 0.6, step: 0.01, label: 'ripple speed' }).on('change', e => uWetSpeed.value = e.value);
+fW.addBinding(P, 'wetFresnel', { min: 0.5, max: 6, step: 0.05, label: 'fresnel' }).on('change', e => uWetFresnel.value = e.value);
+fW.addBinding(P, 'wetRough', { min: 0.05, max: 0.95, step: 0.01, label: 'surface roughness' }).on('change', e => uWetRough.value = e.value);
+fW.addBinding(P, 'wetTint', { label: 'tint' }).on('change', e => uWetTint.value.set(e.value));
+const fF = pane.addFolder({ title: 'floor', expanded: false });
+fF.addBinding(P, 'floorColor', { label: 'color' }).on('change', e => uFloorColor.value.set(e.value));
+fF.addBinding(P, 'bgColor', { label: 'background / fog' }).on('change', e => { COL_BG.set(e.value); scene.fog.color.set(e.value); uBgColor.value.set(e.value); renderer.setClearColor(COL_BG, 0); document.documentElement.style.setProperty('--bg', e.value); });
+fF.addBinding(P, 'fogNear', { min: 10, max: 150, step: 1, label: 'fog start' }).on('change', e => scene.fog.near = e.value);
+fF.addBinding(P, 'fogFar', { min: 20, max: 300, step: 1, label: 'fog end' }).on('change', e => scene.fog.far = e.value);
+const setTileVel = () => uTileVel.value.set(Math.cos(P.tileAngle * Math.PI / 180) * P.tileScroll, Math.sin(P.tileAngle * Math.PI / 180) * P.tileScroll);
+fF.addBinding(P, 'tileScroll', { min: 0, max: 4, step: 0.05, label: 'tile drift speed' }).on('change', setTileVel);
+fF.addBinding(P, 'tileAngle', { min: 0, max: 360, step: 1, label: 'drift direction °' }).on('change', setTileVel);
+fF.addBinding(P, 'tileSize', { min: 0.5, max: 8, step: 0.1, label: 'tile size' }).on('change', e => uTile.value = e.value);
+fF.addBinding(P, 'seamWidth', { min: 0.005, max: 0.2, step: 0.005, label: 'seam width' }).on('change', e => uSeamW.value = e.value);
+fF.addBinding(P, 'seamDark', { min: 0, max: 1, step: 0.01, label: 'seam dark' }).on('change', e => uSeamDark.value = e.value);
+fF.addBinding(P, 'seamLight', { min: 0, max: 0.6, step: 0.01, label: 'seam light lip' }).on('change', e => uSeamLight.value = e.value);
+fF.addBinding(P, 'tileVariation', { min: 0, max: 0.3, step: 0.005, label: 'tile shade var' }).on('change', e => uTileVar.value = e.value);
+fF.addBinding(P, 'floorRoughness', { min: 0, max: 1, step: 0.01, label: 'dry roughness' }).on('change', e => uFloorRough.value = e.value);
+const fM = pane.addFolder({ title: 'solid', expanded: false });
+fM.addBinding(P, 'solidRoughness', { min: 0, max: 1, step: 0.01, label: 'roughness' }).on('change', e => solidMat.roughness = e.value);
+
+// settle heights before the first frame
+for (let t = -3; t < 0; t += 1 / 60) update(t);
+
+addEventListener('keydown', (e) => {
+  if (e.code === 'KeyR') { treeSeed = (treeSeed * 1103515245 + 12345) >>> 0; buildTree(treeSeed); }
+});
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  render-loop
+// ═══════════════════════════════════════════════════════════════════ 
+
+let resizeTimer = null;
+addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (innerWidth < 2 || innerHeight < 2) return;             // collapsed window: nothing sensible to size
+    frameCamera();
+    renderer.setSize(innerWidth, innerHeight);
+    syncMirrorTarget();
+    buildPipeline();                                           // fresh pass targets, no stale copies
+  }, 120);
+});
+
+try {
+  await renderer.init();
+  isWebGPU = !!renderer.backend.isWebGPUBackend;
+  document.getElementById('backend').textContent = isWebGPU ? 'WebGPU' : 'WebGL2 fallback (no cloth: needs compute)';
+  clothEnabled = P.cloth && isWebGPU;
+  clothMesh.visible = clothEnabled;
+  const timer = new THREE.Timer();
+  let loaderHidden = false;
+  const _sz = new THREE.Vector2();
+  renderer.setAnimationLoop((ts) => {
+    if (innerWidth < 2 || innerHeight < 2) return;
+    renderer.getSize(_sz);
+    if (_sz.x !== innerWidth || _sz.y !== innerHeight) {           // size drifted (or started at 0): fix before drawing
+      frameCamera();
+      renderer.setSize(innerWidth, innerHeight);
+      syncMirrorTarget();
+      buildPipeline();
+    }
+    if (!loaderHidden) { loaderHidden = true; document.getElementById('loader').classList.add('hidden'); }
+    timer.update(ts);
+    update(timer.getElapsed() * P.speed);
+    stepCloth(timer.getDelta());
+    controls.update();
+    renderMirror();
+    pipeline.render();
+  });
+} catch (e) {
+  const el = document.getElementById('err');
+  el.style.display = 'grid';
+  el.textContent = 'Could not start the renderer: ' + (e && e.message ? e.message : e);
+  __fail(e && e.message ? e.message : String(e));
+}
+</script>
+</body>
+</html>
