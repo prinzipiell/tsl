@@ -1,0 +1,91 @@
+  @font-face { font-family:'Cinzel'; font-style:normal; font-weight:800; font-display:swap; src:url('./cinzel.ttf') format('truetype'); }
+
+  :root { --bg: #6c6c6c; }
+  :root:not([data-theme="light"]) { --bg: #6c6c6c; }
+  :root[data-theme="dark"] { --bg: #6c6c6c; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden; line-height: 1.1;
+    font-family: 'Cinzel', serif; color: #fff; background: var(--bg);
+    -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+  }
+  canvas { display: block; cursor: grab; touch-action: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; }
+  canvas:active { cursor: grabbing; }
+
+  /* ── loader ── */
+  #loader {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+    z-index: 900; pointer-events: none; transition: opacity 0.6s ease;
+    background: #2f5f8f;
+    background: linear-gradient(160deg, #FDEDB7 0%, #925938 100%);
+  }
+  #loader.hidden { opacity: 0; }
+  .spinner {
+    width: 36px; height: 36px; border: 3px solid rgba(255,255,255,0.25);
+    border-top-color: rgba(255,255,255,0.7); border-radius: 50%; animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading-text { font: 400 13px 'Helvetica Neue', Arial, sans-serif; color: rgba(255,255,255,0.7); letter-spacing: 0.08em; }
+  .loading-text .dot { animation: dotFade 1.4s ease-in-out infinite; opacity: 0; }
+  .loading-text .dot:nth-child(1) { animation-delay: 0s; }
+  .loading-text .dot:nth-child(2) { animation-delay: 0.2s; }
+  .loading-text .dot:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes dotFade { 0%, 80%, 100% { opacity: 0; } 40% { opacity: 1; } }
+
+  /* ── Tweakpane host + dark theme ── */
+  /* Tweakpane stays alive (all bindings work) but is hidden — set display:block to reveal it */
+  #pane-container { position: fixed; top: 16px; right: 16px; z-index: 100; display: none; }
+  :root {
+    --tp-base-background-color:             hsl(222,22%,7%);
+    --tp-base-shadow-color:                 hsla(0,0%,0%,0.35);
+    --tp-button-background-color:           hsl(222,18%,15%);
+    --tp-button-background-color-active:    hsl(222,18%,22%);
+    --tp-button-background-color-focus:     hsl(222,18%,20%);
+    --tp-button-background-color-hover:     hsl(222,18%,19%);
+    --tp-button-foreground-color:           hsl(155,90%,62%);
+    --tp-container-background-color:        hsl(222,18%,11%);
+    --tp-container-background-color-active: hsl(222,18%,15%);
+    --tp-container-background-color-focus:  hsl(222,18%,14%);
+    --tp-container-background-color-hover:  hsl(222,18%,13%);
+    --tp-container-foreground-color:        hsla(155,90%,62%,0.65);
+    --tp-groove-foreground-color:           hsl(222,18%,22%);
+    --tp-input-background-color:            hsl(222,18%,13%);
+    --tp-input-background-color-active:     hsl(222,18%,20%);
+    --tp-input-background-color-focus:      hsl(222,18%,17%);
+    --tp-input-background-color-hover:      hsl(222,18%,16%);
+    --tp-input-foreground-color:            hsl(155,90%,74%);
+    --tp-label-foreground-color:            hsl(220,16%,52%);
+    --tp-monitor-background-color:          hsl(222,18%,10%);
+    --tp-monitor-foreground-color:          hsla(155,90%,62%,0.85);
+  }
+
+  /* ── vignette ── */
+  #vignette { pointer-events: none; background: transparent; height: 100vh; width: 100%; box-shadow: inset 0 0 50px rgba(0,0,0,0.23); position: fixed; z-index: 98; }
+
+  /* ── title block (top-left) ── */
+  #title-block { position: fixed; top: 28px; left: 28px; z-index: 200; pointer-events: none; display: flex; flex-direction: column; gap: 16px; }
+  #title-eyebrow { font: 400 16px/1 'Cinzel', serif; text-transform: uppercase; color: #fff; text-shadow: 2px 2px 6px rgba(0,0,0,0.8); }
+  #title-headline { font: 600 28px/1 'Cinzel', serif; color: #fff; text-shadow: 3px 3px 10px rgba(0,0,0,0.8); }
+  p { font: 400 12px/1 'Cinzel', serif; text-transform: uppercase; color: #fff; text-shadow: 2px 2px 6px rgba(0,0,0,0.8); line-height: 1.5; }
+
+  /* ── nav links (bottom-left) ── */
+  a { color: #D0D0D0; text-decoration: none; }
+  #nav-prev-all, #nav-prev {
+    position: fixed; left: 28px; z-index: 200; font: 400 14px/1 'Cinzel', serif; letter-spacing: .02em;
+    text-transform: uppercase; color: #fff; text-decoration: none; text-shadow: 2px 2px 6px rgba(0,0,0,0.8);
+  }
+  #nav-prev-all { bottom: 56px; }
+  #nav-prev { bottom: 28px; }
+  #nav-prev-all:hover, #nav-prev:hover { text-shadow: 3px 3px 10px rgba(0,0,0,0.9); }
+
+  #tag { display: none; }
+  .err { position: fixed; inset: 0; display: none; place-items: center; color: #ddd; font: 15px/1.5 system-ui, sans-serif; padding: 2em; text-align: center; z-index: 950; }
+
+  @media (max-width: 968px) {
+    #pane-container { right: 6px; width: 190px; }
+    #pane-container .tp-dfwv { width: 190px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.07); box-shadow: 0 8px 48px rgba(0,0,0,0.55); overflow: hidden; }
+    #title-eyebrow { font: 400 11px/1 'Cinzel', serif; }
+    #title-headline { font: 600 23px/1 'Cinzel', serif; }
+    p { font: 400 11px/1 'Cinzel', serif; line-height: 1.5; }
+  }

@@ -1,0 +1,10 @@
+/* Keep the reference theme; expose the requested interactive controls. */
+#pane-container { display:block; width:280px; max-height:calc(100dvh - 32px); overflow:auto; }
+#pane-container .tp-dfwv { width:100%; }
+#loader.hidden { visibility:hidden; }
+#cursor-ring { display:none; }
+@media(max-width:968px) { #pane-container { width:260px; } #pane-container .tp-dfwv { width:100%; } }
+@media(max-width:600px) { #pane-container { top:auto; bottom:16px; max-height:45dvh; width:260px; } #title-block { left:18px; top:20px; } }
+
+#pane-container { --tp-blade-value-width:140px; }
+#pane-container .tp-lblv_l { hyphens:none; white-space:nowrap; text-overflow:ellipsis; padding-right:8px; }

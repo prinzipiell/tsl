@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Splish Splash.</title><link rel="stylesheet" href="styles/style.css"><link rel="stylesheet" href="styles/fluid-ui.css">
+<script type="importmap">{"imports":{"three":"./vendor/three.webgpu.js","three/webgpu":"./vendor/three.webgpu.js","three/tsl":"./vendor/three.tsl.js","tweakpane":"./vendor/tweakpane.js"}}</script>
+</head>
+<body>
+<div id="pane-container"></div>
+
+<div id="title-block">
+  <span id="title-eyebrow">Tinker Day #46</span>
+  <span id="title-headline">Splish Splash.</span>
+  <p style="font-size: 14px;">
+    A flowing knot of water.<br>Thousands of particles swirl,<br>scatter and rejoin the stream.<br><br>
+    Mousedown &amp; move to rotate.<br>Hover over the water stream<br>to splash.<br><br>
+    WebGPU · three.js · TSL<br />
+  </p>
+</div>
+<footer><a id="nav-prev-all" href="https://dasprinzip.com/tinker/index.html">&#8593; Checkout all days</a><a id="nav-prev" href="https://dasprinzip.com/tinker/day45/"><br>&larr; The Day Before.</a></footer>
+<div id="loader"><div class="spinner"></div><div class="loading-text">loading<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></div></div>
+<div id="tag"><span id="backend">…</span></div>
+<div class="err" id="err">Could not start the renderer. This demo needs WebGPU.</div>
+<pre id="diagnostic" hidden></pre><script type="module" src="./main.js"></script></body></html>
