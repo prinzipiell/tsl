@@ -1,0 +1,2473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Rubber Band Loops.</title>
+<link rel="stylesheet" href="styles/style.css"/>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.0/examples/jsm/",
+    "tweakpane": "https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.min.js"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="pane-container"></div>
+<div id="vignette"></div>
+<div id="title-block">
+  <span id="title-eyebrow">Tinker Day #47</span>
+  <span id="title-headline">Rubber Band Loops</span>
+  <p style="font-size: 14px;">
+    Click the rings to throw a ball.<br>Balls dent the glass and shatter<br>
+    Mousedown & Move to rotate<br><br>
+    Open controls to adjust almost<br>everything!<br><br>
+    <span style="font-size: 12px;">WebGPU · three.js · TSL</span><br />
+  </p>
+</div>
+<footer><a id="nav-prev-all" href="https://dasprinzip.com/tinker/index.html">&#8593; Checkout all days</a><a id="nav-prev" href="https://dasprinzip.com/tinker/day46/"><br>&larr; The Day Before.</a></footer>
+<div id="loader"><div class="spinner"></div><div class="loading-text">loading<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></div></div>
+<script>
+  const __fail = (msg) => {
+    const l = document.getElementById('loader');
+    if (!l) return;
+    l.classList.remove('hidden');
+    const sp = l.querySelector('.spinner'); if (sp) sp.style.display = 'none';
+    const t = l.querySelector('.loading-text');
+    if (t) t.textContent = 'error — ' + msg;
+  };
+  window.addEventListener('error', e => __fail(e.message || 'script error'));
+  window.addEventListener('unhandledrejection', e =>
+    __fail(e.reason && e.reason.message ? e.reason.message : String(e.reason)));
+</script>
+<script type="module">
+import * as THREE from 'three/webgpu';
+import { uniform, mix, smoothstep, sin, float, vec3, exp, atan, floor as tslFloor, Fn, positionWorld, positionGeometry, positionLocal, normalGeometry, instancedDynamicBufferAttribute, attribute, uniformArray, Loop, max as tslMax, vec2, cos } from 'three/tsl';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
+import { Pane } from 'tweakpane';
+
+const DEG = Math.PI / 180;
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  parameters
+// ═══════════════════════════════════════════════════════════════════
+
+const DEFAULTS = {
+  anim: { play: true, period: 3.65, speed: 1.0, hold: 0.35, easeIn: 2.0, easeOut: 1.3, delay: 0.03, direction: -1, phase: 0,
+          bulgeMove: 0.103, bulgeRest: 0.04, bulgeWidth: 24, discRide: 1.04, springK: 120, springDamp: 7,
+          waveAmp: 0, waveLen: 1.0, waveSpeed: 1.0, waveTaper: 1.0,
+          slideAmp: 0, slideLen: 0.75, slideSpeed: 1.0, slideDir: -45, slideTaper: 0.3, slideBias: 0.6, tiltFollow: 0.0 },
+  tube: { radius: 1.0, length: 4.6, rings: 17, gap: 0.025, ringWidth: 0.08, ringThick: 0.25, corner: 1.0, segments: 96,
+          yaw: 0, pitch: 0, hover: 0.02 },
+  discs: { radius: 0.3, thick: 0.4, fillet: 0.3, inset: 0.01, orbitScale: 1.0, angle: 210, twist: 0, jitter: 0, seed: 7 },
+  glass: { color: '#ece6e8', roughness: 0.02, metalness: 0.0, transmission: 1.0, thickness: 0.35, ior: 1.6,
+           attenuationColor: '#9c8479', attenuationDistance: 2.0, dispersion: 14.0, specularIntensity: 1.0, envIntensity: 1.4,
+           clearcoat: 0.7, clearcoatRoughness: 0.04, castShadow: true,
+           iridescence: 0.45, iridescenceIOR: 1.3, iridMin: 180, iridMax: 520, iridBands: 3.0, iridFlow: 0.15,
+           liner: true, linerColor: '#0b0909', linerRoughness: 0.08 },
+  discMat: { color: '#86604f', roughness: 0.34, metalness: 1.0, envIntensity: 0.9,
+             anisotropy: 0.95, anisoRot: 90,
+             grooveFreq: 40, grooveAmp: 0.0, grooveRough: 0.03, edgeStart: 0.92, edgeDark: 0.2,
+             rimColor: '#dcbaa6', rimRough: 0.14, rimSharp: 0.9,
+             sideColor: '#3b2a24', sideRough: 0.4 },
+  floor: { centerColor: '#c4c4c9', edgeColor: '#8a8990', radius: 11, power: 1.4, center: { x: 2.0, y: -1.5 },
+           shadowStrength: 1.0, soft: 1.0, dentSpread: 0.25, dentShade: 0.30, dentMargin: 0.1,
+           background: '#a8a7ad', fog: true, fogNear: 14, fogFar: 40 },
+  env: { intensity: 1.0, rotation: 0, blur: 0.02,
+         roomTop: '#77767c', roomHorizon: '#c6c5ca', roomFloor: '#8d8c92', horizonSoft: 0.2,
+         key:  { on: true, color: '#fff6ec', intensity: 5.0, az: -25, el: 72, w: 16, h: 2.5 },
+         fill: { on: true, color: '#ffffff', intensity: 2.0, az: 45, el: 12, w: 4, h: 12 },
+         rim:  { on: true, color: '#eef0ff', intensity: 2.5, az: -150, el: 30, w: 3, h: 8 },
+         flag: { on: true, color: '#050505', intensity: 1.0, az: -60, el: 12, w: 12, h: 7 } },
+  light: { color: '#ffe6cf', intensity: 2.0, az: -110, el: 42, shadows: true, type: 'VSM',
+           radius: 16, blurSamples: 16, bias: -0.0004, normalBias: 0.02,
+           softSize: 24, softStrength: 0.63, mapStrength: 0.0, aoStrength: 0.96, aoRadius: 0.3, shadowTint: '#2c2a30' },
+  camera: { fov: 32, az: -55, el: 30, dist: 8.8, targetY: 0, orbit: true },
+  sound: { on: true, volume: 0.67, atmosphere: 0.93, discs: 1.39, impacts: 1.72, delayTime: 1.043, feedback: 0.55, delayMix: 1.30, reverbMix: 0.73, dubThrows: true },
+  ball: { radius: 0.16, speed: 13, gravity: 9.8, bounce: 0.5, friction: 0.85, life: 6, color: '#ece8e2', roughness: 0.22,
+          dentGain: 0.03, dentMax: 0.4, dentWidth: 28, dentSpread: 0.45, stiffness: 180, damping: 3.5, ripple: 220,
+          discFollow: 1.0, discJump: 1.0, discSpring: 90, discDamp: 9,
+          pushGain: 0.012, pushMax: 0.3, pushSpring: 110, pushDamp: 3.0, pushCouple: 320, pushTilt: 1.0,
+          discBounce: 0.6, discFriction: 0.15, discKnock: 0.35,
+          shatter: true, shatterSpeed: 1.5, shatterFrames: 4, pieces: 14, burst: 2.2, keep: 0.35, spin: 12, pieceLife: 1.2, pieceBounce: 0.3, innerColor: '#b8a697' },
+};
+const P = structuredClone(DEFAULTS);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  helpers
+// ═══════════════════════════════════════════════════════════════════
+
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const gain = (x, kIn, kOut = kIn) => (x < 0.5 ? 0.5 * Math.pow(2 * x, kIn) : 1 - 0.5 * Math.pow(2 * (1 - x), kOut));
+const frac = (x) => x - Math.floor(x);
+
+function profilePoints() {
+  const pts = [];
+  const add = (x, y) => {
+    const last = pts[pts.length - 1];
+    if (last && Math.abs(last.x - x) < 1e-6 && Math.abs(last.y - y) < 1e-6) return;
+    pts.push(new THREE.Vector2(x, y));
+  };
+  const arc = (cx, cy, r, a0, a1, segs = 7) => {
+    for (let i = 0; i <= segs; i++) {
+      const a = a0 + (a1 - a0) * i / segs;
+      add(cx + r * Math.cos(a), cy + r * Math.sin(a));
+    }
+  };
+  return { pts, add, arc };
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  Rounded-rectangle annulus profile, counter-clockwise, so LatheGeometry normals point outward.
+// ═══════════════════════════════════════════════════════════════════
+
+function annulusProfile(rMean, width, thick, cornerFactor) {
+  const ri = rMean - width / 2, ro = rMean + width / 2, h = thick / 2;
+  const cr = Math.max(0.0005, Math.min(width, thick) / 2 * Math.min(1, Math.max(0.02, cornerFactor)));
+  const { pts, add, arc } = profilePoints();
+  add((ri + ro) / 2, -h);
+  arc(ro - cr, -h + cr, cr, -Math.PI / 2, 0);
+  arc(ro - cr, h - cr, cr, 0, Math.PI / 2);
+  arc(ri + cr, h - cr, cr, Math.PI / 2, Math.PI);
+  arc(ri + cr, -h + cr, cr, Math.PI, Math.PI * 1.5);
+  add((ri + ro) / 2, -h);
+  return pts;
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  Inner face of the ring only (an open strip, normals pointing at the axis): the opaque "liner"
+//  that the transmission pass sees behind the glass.
+// ═══════════════════════════════════════════════════════════════════
+
+function linerProfile(rMean, width, thick, cornerFactor) {
+  const ri = rMean - width / 2 - 0.004, h = thick / 2;
+  const cr = Math.max(0.0005, Math.min(width, thick) / 2 * Math.min(1, Math.max(0.02, cornerFactor)));
+  return [new THREE.Vector2(ri, h - cr), new THREE.Vector2(ri, -h + cr)];
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  Flat puck with filleted rim (the bronze discs).
+// ═══════════════════════════════════════════════════════════════════
+
+function puckProfile(r, thick, filletFactor) {
+  const h = thick / 2;
+  const f = Math.max(0.0005, Math.min(r * 0.5, h) * Math.min(1, Math.max(0.02, filletFactor)));
+  const { pts, add, arc } = profilePoints();
+  add(0, -h);
+  arc(r - f, -h + f, f, -Math.PI / 2, 0);
+  arc(r - f, h - f, f, 0, Math.PI / 2);
+  add(0, h);
+  return pts;
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  LatheGeometry leaves the last profile point's normal unnormalized; fix that.
+// ═══════════════════════════════════════════════════════════════════
+
+function lathe(profile, segments) {
+  const g = new THREE.LatheGeometry(profile, segments);
+  const n = g.attributes.normal, v = new THREE.Vector3();
+  for (let i = 0; i < n.count; i++) {
+    v.fromBufferAttribute(n, i);
+    if (v.lengthSq() > 1e-12) { v.normalize(); n.setXYZ(i, v.x, v.y, v.z); }
+  }
+  return g;
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  Tangent = circumferential direction around the lathe (Y) axis, so anisotropy follows the turning grooves.
+// ═══════════════════════════════════════════════════════════════════
+
+function addCircularTangents(g) {
+  const pos = g.attributes.position, tan = new Float32Array(pos.count * 4);
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), z = pos.getZ(i), r = Math.hypot(x, z);
+    const tx = r > 1e-6 ? -z / r : 1, tz = r > 1e-6 ? x / r : 0;
+    tan[i * 4] = tx; tan[i * 4 + 1] = 0; tan[i * 4 + 2] = tz; tan[i * 4 + 3] = 1;
+  }
+  g.setAttribute('tangent', new THREE.BufferAttribute(tan, 4));
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  renderer
+// ═══════════════════════════════════════════════════════════════════
+
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGPURenderer({ canvas, antialias: true });
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+await renderer.init();
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.VSMShadowMap;
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 200);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  stay above the floor plane
+// ═══════════════════════════════════════════════════════════════════
+
+controls.maxPolarAngle = Math.PI / 2 - 0.03;
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  environment (small studio, baked with PMREM)
+// ═══════════════════════════════════════════════════════════════════
+
+const ROOM = 24;
+const uRoomTop = uniform(new THREE.Color(P.env.roomTop));
+const uRoomHorizon = uniform(new THREE.Color(P.env.roomHorizon));
+const uRoomFloor = uniform(new THREE.Color(P.env.roomFloor));
+const uHorizonSoft = uniform(P.env.horizonSoft);
+const envScene = new THREE.Scene();
+{
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  light-grey cyclorama studio: floor -> bright horizon -> darker ceiling
+  // ═══════════════════════════════════════════════════════════════════
+
+  const roomMat = new THREE.MeshBasicNodeMaterial({ side: THREE.BackSide });
+  const y = positionWorld.normalize().y;
+  const low = mix(uRoomFloor, uRoomHorizon, smoothstep(uHorizonSoft.negate(), float(0.0), y));
+  roomMat.colorNode = mix(low, uRoomTop, smoothstep(float(0.0), float(0.9), y));
+  envScene.add(new THREE.Mesh(new THREE.BoxGeometry(ROOM, ROOM, ROOM), roomMat));
+}
+const panels = {};
+for (const name of ['key', 'fill', 'rim', 'flag']) {
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicNodeMaterial({ color: 0xffffff }));
+  envScene.add(m);
+  panels[name] = m;
+}
+const pmrem = new THREE.PMREMGenerator(renderer);
+let envRT = null;
+let envDirty = false;
+function regenEnv() {
+  for (const name in panels) {
+    const cfg = P.env[name], m = panels[name];
+    m.visible = !!cfg.on;
+    const el = cfg.el * DEG, az = cfg.az * DEG;
+    m.position.set(Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az)).multiplyScalar(9);
+    m.lookAt(0, 0, 0);
+    m.scale.set(Math.max(0.05, cfg.w), Math.max(0.05, cfg.h), 1);
+    m.material.color.set(cfg.color).multiplyScalar(cfg.intensity);
+  }
+  uRoomTop.value.set(P.env.roomTop);
+  uRoomHorizon.value.set(P.env.roomHorizon);
+  uRoomFloor.value.set(P.env.roomFloor);
+  uHorizonSoft.value = Math.max(0.001, P.env.horizonSoft);
+  envRT = pmrem.fromScene(envScene, Math.max(0, P.env.blur), 0.1, 100, { renderTarget: envRT });
+  scene.environment = envRT.texture;
+  envDirty = false;
+}
+regenEnv();
+function applyEnv() {
+  scene.environmentIntensity = P.env.intensity;
+  scene.environmentRotation.set(0, P.env.rotation * DEG, 0);
+  for (const m of [glassMat, linerMat, discMat]) m.envMapRotation.set(0, P.env.rotation * DEG, 0);
+  glassMat.envMapIntensity = P.glass.envIntensity * P.env.intensity;
+  linerMat.envMapIntensity = P.glass.envIntensity * P.env.intensity;
+  discMat.envMapIntensity = P.discMat.envIntensity * P.env.intensity;
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  materials
+//  Smoky glass rings (transmission) + an opaque dark inner liner so the glass has something dark behind it.
+// ═══════════════════════════════════════════════════════════════════
+
+const glassMat = new THREE.MeshPhysicalNodeMaterial({ envMap: envRT.texture });
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  iridescent film thickness varies around each ring and drifts slowly -> moving rainbow bands on the glass
+// ═══════════════════════════════════════════════════════════════════
+
+const uIridMin = uniform(180), uIridMax = uniform(520), uIridBands = uniform(3), uIridFlow = uniform(0.15), uTime = uniform(0);
+{
+  const g = positionGeometry;
+  const band = cos(atan(g.z, g.x).mul(uIridBands).add(g.y.mul(6)).add(uTime.mul(uIridFlow).mul(Math.PI * 2))).mul(0.5).add(0.5);
+  glassMat.iridescenceThicknessNode = mix(uIridMin, uIridMax, band);
+}
+const linerMat = new THREE.MeshPhysicalNodeMaterial({ envMap: envRT.texture, color: 0x0b0909, roughness: 0.08, metalness: 0 });
+function applyGlass() {
+  const G = P.glass;
+  glassMat.color.set(G.color);
+  glassMat.roughness = G.roughness;
+  glassMat.metalness = G.metalness;
+  glassMat.transmission = G.transmission;
+  glassMat.thickness = G.thickness;
+  glassMat.ior = G.ior;
+  glassMat.attenuationColor.set(G.attenuationColor);
+  glassMat.attenuationDistance = G.attenuationDistance > 0 ? G.attenuationDistance : Infinity;
+  glassMat.dispersion = G.dispersion;
+  glassMat.iridescence = G.iridescence;
+  glassMat.iridescenceIOR = G.iridescenceIOR;
+  uIridMin.value = G.iridMin; uIridMax.value = G.iridMax; uIridBands.value = G.iridBands; uIridFlow.value = G.iridFlow;
+  glassMat.specularIntensity = G.specularIntensity;
+  glassMat.clearcoat = G.clearcoat;
+  glassMat.clearcoatRoughness = G.clearcoatRoughness;
+  glassMat.envMapIntensity = G.envIntensity * P.env.intensity;
+  linerMat.color.set(G.linerColor);
+  linerMat.roughness = G.linerRoughness;
+  linerMat.envMapIntensity = G.envIntensity * P.env.intensity;
+  outer.castShadow = G.castShadow;
+  liner.visible = G.liner;
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  Bronze discs: colour + roughness modulated by concentric "lathe" grooves on the flat faces, darker filleted rim.
+// ═══════════════════════════════════════════════════════════════════
+
+const uDiscColor = uniform(new THREE.Color(P.discMat.color));
+const uDiscRadius = uniform(1);
+const uDiscRough = uniform(P.discMat.roughness);
+const uGrooveFreq = uniform(P.discMat.grooveFreq);
+const uGrooveAmp = uniform(P.discMat.grooveAmp);
+const uGrooveRough = uniform(P.discMat.grooveRough);
+const uEdgeStart = uniform(P.discMat.edgeStart);
+const uEdgeDark = uniform(P.discMat.edgeDark);
+const uRimColor = uniform(new THREE.Color(P.discMat.rimColor));
+const uRimRough = uniform(P.discMat.rimRough);
+const uRimSharp = uniform(P.discMat.rimSharp);
+const uSideColor = uniform(new THREE.Color(P.discMat.sideColor));
+const uSideRough = uniform(P.discMat.sideRough);
+const discMat = new THREE.MeshPhysicalNodeMaterial({ envMap: envRT.texture, metalness: 1, roughness: 0.3 });
+{
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  0 at centre, 1 at rim
+  // ═══════════════════════════════════════════════════════════════════
+
+  const rr = positionGeometry.xz.length().div(uDiscRadius);
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  1 on the flat faces, 0 on the rounded edge
+  // ═══════════════════════════════════════════════════════════════════
+
+  const face = smoothstep(uRimSharp, float(0.995), normalGeometry.y.abs());
+  const grooves = sin(rr.mul(uGrooveFreq).mul(Math.PI * 2)).mul(0.5).add(0.5).mul(face);
+  const rim = smoothstep(uEdgeStart, float(1.0), rr).mul(face);
+  const shade = float(1).sub(grooves.mul(uGrooveAmp)).mul(float(1).sub(rim.mul(uEdgeDark)));
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  three zones: flat face (bronze), thin rounded bevel (light rose copper), cylindrical side (dark)
+  // ═══════════════════════════════════════════════════════════════════
+
+  const side = float(1).sub(smoothstep(float(0.12), float(0.35), normalGeometry.y.abs()));
+  const bevelCol = mix(uRimColor, uSideColor, side);
+  const bevelRough = mix(uRimRough, uSideRough, side);
+  discMat.colorNode = mix(bevelCol, uDiscColor.mul(shade), face);
+  discMat.roughnessNode = mix(bevelRough, uDiscRough.add(grooves.sub(0.5).mul(uGrooveRough)), face).clamp(0.02, 1);
+}
+function applyDiscMat() {
+  const C = P.discMat;
+  discMat.anisotropy = C.anisotropy;
+  discMat.anisotropyRotation = C.anisoRot * DEG;
+  uDiscColor.value.set(C.color);
+  uDiscRough.value = C.roughness;
+  discMat.metalness = C.metalness;
+  discMat.envMapIntensity = C.envIntensity * P.env.intensity;
+  uGrooveFreq.value = C.grooveFreq;
+  uGrooveAmp.value = C.grooveAmp;
+  uGrooveRough.value = C.grooveRough;
+  uEdgeStart.value = C.edgeStart;
+  uEdgeDark.value = C.edgeDark;
+  uRimColor.value.set(C.rimColor);
+  uRimRough.value = C.rimRough;
+  uRimSharp.value = Math.min(0.99, C.rimSharp);
+  uSideColor.value.set(C.sideColor);
+  uSideRough.value = C.sideRough;
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  Floor: unlit radial gradient, with the key light's shadow mask folded in (opaque, so it shows through the glass).
+// ═══════════════════════════════════════════════════════════════════
+
+const uFloorC0 = uniform(new THREE.Color(P.floor.centerColor));
+const uFloorC1 = uniform(new THREE.Color(P.floor.edgeColor));
+const uFloorCenter = uniform(new THREE.Vector2(P.floor.center.x, P.floor.center.y));
+const uFloorRadius = uniform(P.floor.radius);
+const uFloorPow = uniform(P.floor.power);
+const uShadowStrength = uniform(P.floor.shadowStrength);
+const floorGradient = mix(uFloorC0, uFloorC1, positionWorld.xz.sub(uFloorCenter).length().div(uFloorRadius).clamp(0, 1).pow(uFloorPow));
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  Soft floor: every ring whose bulge reaches below y = 0 leaves a dent (x, z, depth) that the floor sinks into.
+// ═══════════════════════════════════════════════════════════════════
+
+const MAX_DENTS = 48;
+const dentVecs = Array.from({ length: MAX_DENTS }, () => new THREE.Vector4());
+const uDents = uniformArray(dentVecs, 'vec4');
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  tube axis direction on the floor
+// ═══════════════════════════════════════════════════════════════════
+
+const uDentAxis = uniform(new THREE.Vector2(1, 0));
+const uDentAlong = uniform(0.2), uDentAcross = uniform(0.4);
+const uFloorSoft = uniform(P.floor.soft), uDentShade = uniform(P.floor.dentShade);
+const dentAt = Fn(([p]) => {
+  const depth = float(0).toVar();
+  const across = vec2(uDentAxis.y.negate(), uDentAxis.x);
+  Loop(MAX_DENTS, ({ i }) => {
+    const e = uDents.element(i);
+    const rel = p.sub(e.xy);
+    const a = rel.dot(uDentAxis).div(uDentAlong);
+    const c = rel.dot(across).div(uDentAcross);
+    depth.assign(tslMax(depth, e.z.mul(exp(a.mul(a).add(c.mul(c)).negate()))));
+  });
+  return depth;
+});
+const floorDentPosition = Fn(() => {
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  plane is rotated: local (x, y) -> world (x, -y), local z -> world y
+  // ═══════════════════════════════════════════════════════════════════
+
+  const g = positionGeometry;
+  const d = dentAt(vec2(g.x, g.y.negate())).mul(uFloorSoft);
+  return positionLocal.sub(vec3(0, 0, d));
+})();
+const dentShading = float(1).sub(uDentShade.mul(smoothstep(float(0), float(0.12), dentAt(positionWorld.xz).mul(uFloorSoft))));
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  Area-light soft shadow of the tube (capsule A–B, radius R) toward the key light: the penumbra widens
+//  with distance from the tube, like the reference render. Plus a contact occlusion term along the tube.
+// ═══════════════════════════════════════════════════════════════════
+
+const uCapA = uniform(new THREE.Vector3()), uCapB = uniform(new THREE.Vector3());
+const uCapR = uniform(1), uLightDir = uniform(new THREE.Vector3(0, 1, 0));
+const uSoftK = uniform(2.4), uSoftStrength = uniform(0.85), uMapStrength = uniform(0.3);
+const uAoStrength = uniform(0.55), uAoRadius = uniform(0.3);
+const uShadowTint = uniform(new THREE.Color('#2c2a30'));
+const capsuleSoftShadow = Fn(([ro, rd]) => {
+  const ba = uCapB.sub(uCapA), oa = ro.sub(uCapA);
+  const oad = oa.dot(rd), dba = rd.dot(ba), baba = ba.dot(ba), oaba = oa.dot(ba);
+  const den = tslMax(baba.sub(dba.mul(dba)), float(1e-5));
+  const tx = tslMax(oad.negate().mul(baba).add(dba.mul(oaba)).div(den), float(1e-4));
+  const ty = oaba.sub(oad.mul(dba)).div(den).clamp(0, 1);
+  const d = uCapA.add(ba.mul(ty)).sub(ro.add(rd.mul(tx))).length().sub(uCapR);
+  const s = uSoftK.mul(d).div(tx).add(0.5).clamp(0, 1);
+  return s.mul(s).mul(float(3).sub(s.mul(2)));
+});
+const capsuleAO = Fn(([ro]) => {
+  const ba = uCapB.sub(uCapA), oa = ro.sub(uCapA);
+  const t = oa.dot(ba).div(ba.dot(ba)).clamp(0, 1);
+  const dist = tslMax(oa.sub(ba.mul(t)).length().sub(uCapR), float(0));
+  return float(1).sub(uAoStrength.mul(exp(dist.div(uAoRadius).negate())));
+});
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  ignore the dent depth, otherwise dents read as brighter
+// ═══════════════════════════════════════════════════════════════════
+
+const flatFloorPos = vec3(positionWorld.x, 0, positionWorld.z);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  balls: sphere soft shadow + contact occlusion (inactive balls sit far below the floor)
+//  8 balls + 8 slots for shattered pieces
+// ═══════════════════════════════════════════════════════════════════
+
+const MAX_BALLS = 8, SHADOW_SLOTS = 16;
+const ballVecs = Array.from({ length: SHADOW_SLOTS }, () => new THREE.Vector4(0, -1000, 0, 0.1));
+const uBalls = uniformArray(ballVecs, 'vec4');
+const ballsShadow = Fn(([ro, rd]) => {
+  const res = float(1).toVar();
+  Loop(SHADOW_SLOTS, ({ i }) => {
+    const sph = uBalls.element(i);
+    const oc = ro.sub(sph.xyz);
+    const b = oc.dot(rd);
+    const c = oc.dot(oc).sub(sph.w.mul(sph.w));
+    const h = b.mul(b).sub(c);
+    const d = tslMax(sph.w.mul(sph.w).sub(h), float(0)).sqrt().sub(sph.w);
+    const t = b.negate().sub(tslMax(h, float(0)).sqrt());
+    const sh = smoothstep(float(0), float(1), uSoftK.mul(d).div(tslMax(t, float(1e-4))).mul(1.25).add(0.5));
+    const soft = mix(float(1), sh, uSoftStrength.mul(t.greaterThan(0).select(float(1), float(0))));
+    const dist = tslMax(oc.length().sub(sph.w), float(0));
+    const ao = float(1).sub(uAoStrength.mul(0.8).mul(exp(dist.div(sph.w.mul(1.2)).negate())));
+    res.mulAssign(soft.mul(ao));
+  });
+  return res;
+});
+const analyticShadow = mix(float(1), capsuleSoftShadow(flatFloorPos, uLightDir), uSoftStrength).mul(capsuleAO(flatFloorPos)).mul(ballsShadow(flatFloorPos, uLightDir));
+
+class FloorShadowModel extends THREE.LightingModel {
+  constructor() { super(); this.mask = float(1).toVar('floorShadowMask'); }
+  direct({ lightNode }) { if (lightNode.shadowNode) this.mask.mulAssign(lightNode.shadowNode); }
+  finish({ context }) {
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  1 = fully lit
+    // ═══════════════════════════════════════════════════════════════════
+
+    const lit = mix(float(1), this.mask, uMapStrength).mul(analyticShadow);
+    const shade = mix(uShadowTint, vec3(1, 1, 1), float(1).sub(uShadowStrength.mul(float(1).sub(lit))));
+    context.outgoingLight.rgb.assign(floorGradient.mul(dentShading).mul(shade));
+  }
+}
+class FloorMaterial extends THREE.NodeMaterial {
+  static get type() { return 'FloorMaterial'; }
+  constructor() { super(); this.lights = true; this.color = new THREE.Color(1, 1, 1); this.name = 'FloorMaterial'; }
+  setupLightingModel() { return new FloorShadowModel(); }
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  one big plane, finely tessellated around the centre and coarse towards the horizon
+// ═══════════════════════════════════════════════════════════════════
+
+function makeFloorGeometry(size = 400, segs = 320, centreSpacing = 0.03) {
+  const g = new THREE.PlaneGeometry(1, 1, segs, segs);
+  const pos = g.attributes.position;
+  const c1 = centreSpacing * segs / 2, c2 = size / 2 - c1;
+  const warp = (v) => { const u = Math.abs(v) * 2; return Math.sign(v) * (c1 * u + c2 * Math.pow(u, 5)); };
+  for (let i = 0; i < pos.count; i++) pos.setXY(i, warp(pos.getX(i)), warp(pos.getY(i)));
+  g.computeBoundingSphere();
+  return g;
+}
+const floorMat = new FloorMaterial();
+floorMat.positionNode = floorDentPosition;
+const floor = new THREE.Mesh(makeFloorGeometry(), floorMat);
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+floor.frustumCulled = false;
+scene.add(floor);
+function applyFloor() {
+  const F = P.floor;
+  uFloorC0.value.set(F.centerColor);
+  uFloorC1.value.set(F.edgeColor);
+  uFloorCenter.value.set(F.center.x, F.center.y);
+  uFloorRadius.value = Math.max(0.01, F.radius);
+  uFloorPow.value = F.power;
+  uShadowStrength.value = F.shadowStrength;
+  uFloorSoft.value = F.soft;
+  uDentShade.value = F.dentShade;
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  tube: glass rings, liner, one disc per ring (all instanced)
+// ═══════════════════════════════════════════════════════════════════
+
+const MAX_RINGS = 128;
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  yaw around world Y
+// ═══════════════════════════════════════════════════════════════════
+
+const root = new THREE.Group();
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  maps local Y (lathe axis) onto world X, plus pitch
+// ═══════════════════════════════════════════════════════════════════
+
+const tilt = new THREE.Group();
+root.add(tilt);
+scene.add(root);
+
+const outer = new THREE.InstancedMesh(new THREE.BufferGeometry(), glassMat, MAX_RINGS);
+const liner = new THREE.InstancedMesh(new THREE.BufferGeometry(), linerMat, MAX_RINGS);
+const discs = new THREE.InstancedMesh(new THREE.BufferGeometry(), discMat, MAX_RINGS);
+for (const m of [outer, liner, discs]) {
+  m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  m.receiveShadow = true;
+  m.frustumCulled = false;
+  tilt.add(m);
+}
+outer.castShadow = true;
+discs.castShadow = true;
+liner.castShadow = false;
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  Local bulge: each ring pushes outward only around its own disc (per-instance angle + amplitude, TSL vertex stage).
+// ═══════════════════════════════════════════════════════════════════
+
+const ringData = new THREE.InstancedBufferAttribute(new Float32Array(MAX_RINGS * 4), 4);
+ringData.setUsage(THREE.DynamicDrawUsage);
+const ringDataNode = instancedDynamicBufferAttribute(ringData, 'vec4');
+const uBulgeWidth = uniform(P.anim.bulgeWidth * DEG);
+const uHitWidth = uniform(P.ball.dentWidth * DEG);
+const bulgedPosition = Fn(() => {
+  const g = positionGeometry;
+  const th = atan(g.z, g.x);
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  [-π, π)
+  // ═══════════════════════════════════════════════════════════════════
+
+  const wrap = (a) => { const d0 = th.sub(a).add(Math.PI); return d0.sub(tslFloor(d0.div(Math.PI * 2)).mul(Math.PI * 2)).sub(Math.PI); };
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  disc bulge (outward)
+  // ═══════════════════════════════════════════════════════════════════
+
+  const w = exp(wrap(ringDataNode.x).div(uBulgeWidth).pow(2).negate());
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ball impact (inward, wobbling)
+  // ═══════════════════════════════════════════════════════════════════
+
+  const wh = exp(wrap(ringDataNode.z).div(uHitWidth).pow(2).negate());
+  const dir = vec3(g.x, 0, g.z).normalize();
+  return positionLocal.add(dir.mul(ringDataNode.y.mul(w).add(ringDataNode.w.mul(wh))));
+})();
+glassMat.positionNode = bulgedPosition;
+linerMat.positionNode = bulgedPosition;
+
+function rebuildGeometry() {
+  P.tube.length = tubeLength();
+  const T = P.tube, D = P.discs;
+  const seg = Math.max(12, Math.round(T.segments));
+  outer.geometry.dispose();
+  outer.geometry = lathe(annulusProfile(T.radius, T.ringWidth, T.ringThick, T.corner), seg);
+  liner.geometry.dispose();
+  liner.geometry = lathe(linerProfile(T.radius, T.ringWidth, T.ringThick, T.corner), seg);
+  const discR = Math.max(0.005, D.radius);
+  discs.geometry.dispose();
+  discs.geometry = lathe(puckProfile(discR, Math.max(0.005, T.ringThick * D.thick), D.fillet), Math.max(12, Math.round(seg * 0.6)));
+  addCircularTangents(discs.geometry);
+  uDiscRadius.value = discR;
+  root.position.y = T.radius + T.ringWidth / 2 + T.hover;
+  root.rotation.y = T.yaw * DEG;
+  tilt.rotation.z = -Math.PI / 2 + T.pitch * DEG;
+  updateShadowCamera();
+  applyCamera();
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  length follows from ring count, ring thickness and gap
+// ═══════════════════════════════════════════════════════════════════
+
+function tubeLength() {
+  const n = Math.max(1, Math.round(P.tube.rings));
+  return Math.max(0.01, (n - 1) * (P.tube.ringThick + Math.max(0, P.tube.gap)));
+}
+
+let jitter = [];
+function recomputeJitter() {
+  const rnd = mulberry32(Math.round(P.discs.seed) * 7919 + 13);
+  jitter = [];
+  for (let i = 0; i < MAX_RINGS; i++) jitter.push((rnd() - 0.5) * 2);
+}
+recomputeJitter();
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  eased revolution with a hold at the start/end of each loop: 0..1
+// ═══════════════════════════════════════════════════════════════════
+
+function motion(p, hold, easeIn, easeOut) {
+  const h = Math.min(0.9, Math.max(0, hold));
+  if (p < h / 2) return 0;
+  if (p > 1 - h / 2) return 1;
+  return gain((p - h / 2) / (1 - h), Math.max(1, easeIn), Math.max(1, easeOut));
+}
+
+const _m = new THREE.Matrix4(), _t = new THREE.Matrix4(), _d = new THREE.Matrix4();
+const _axis = new THREE.Vector3();
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  1 = pinned at both ends
+// ═══════════════════════════════════════════════════════════════════
+
+const envelope = (u, taper) => 1 - taper * (1 - 4 * u * (1 - u));
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  >0 grows toward the back, <0 toward the front
+// ═══════════════════════════════════════════════════════════════════
+
+const biasW = (u, b) => (b >= 0 ? 1 - b + b * u : 1 + b - b * (1 - u));
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  per-ring spring state for the bulge wobble (ring centre offset in tilt-local XZ)
+// ═══════════════════════════════════════════════════════════════════
+
+const offX = new Float32Array(MAX_RINGS), offZ = new Float32Array(MAX_RINGS);
+const velX = new Float32Array(MAX_RINGS), velZ = new Float32Array(MAX_RINGS);
+const angArr = new Float32Array(MAX_RINGS);
+const cx = new Float32Array(MAX_RINGS), cz = new Float32Array(MAX_RINGS), cy = new Float32Array(MAX_RINGS);
+let springInit = false;
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  where a ring's downward bulge pokes below the floor, record a dent for the floor shader
+// ═══════════════════════════════════════════════════════════════════
+
+const _bp = new THREE.Vector3(), _ax0 = new THREE.Vector3(), _ax1 = new THREE.Vector3();
+function updateDents(n) {
+  const T = P.tube, F = P.floor, A = P.anim;
+  tilt.updateMatrixWorld(true);
+  const Ro = T.radius + T.ringWidth / 2;
+  const sig = Math.max(1, A.bulgeWidth) * DEG;
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  tube axis on the floor
+  // ═══════════════════════════════════════════════════════════════════
+
+  const halfL = tubeLength() / 2 + T.ringThick / 2;
+  _ax0.set(0, -halfL, 0).applyMatrix4(tilt.matrixWorld); _ax1.set(0, halfL, 0).applyMatrix4(tilt.matrixWorld);
+  uCapA.value.copy(_ax0); uCapB.value.copy(_ax1); uCapR.value = Ro;
+  uLightDir.value.copy(key.position).sub(key.target.position).normalize();
+  const axx = _ax1.x - _ax0.x, axz = _ax1.z - _ax0.z, al = Math.hypot(axx, axz) || 1;
+  uDentAxis.value.set(axx / al, axz / al);
+  uDentAlong.value = T.ringThick * 0.5 + F.dentSpread * 0.5 + 0.02;
+  uDentAcross.value = Ro * sig + F.dentSpread + 0.05;
+  for (let k = 0; k < MAX_DENTS; k++) {
+    const v = dentVecs[k];
+    if (k >= n) { v.set(0, 0, 0, 0); continue; }
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  local +X of the tilt group points straight down (tilt.rotation.z = -90°)
+    // ═══════════════════════════════════════════════════════════════════
+
+    const wrapA = (a) => { let d = a % (2 * Math.PI); if (d > Math.PI) d -= 2 * Math.PI; if (d < -Math.PI) d += 2 * Math.PI; return d; };
+    const d = wrapA(ringData.array[k * 4]), dh = wrapA(ringData.array[k * 4 + 2]), sh = uHitWidth.value;
+    const down = ringData.array[k * 4 + 1] * Math.exp(-(d / sig) * (d / sig)) + ringData.array[k * 4 + 3] * Math.exp(-(dh / sh) * (dh / sh));
+    _bp.set(cx[k] + Ro + down, cy[k], cz[k]).applyMatrix4(tilt.matrixWorld);
+    const pen = -_bp.y;
+    v.set(_bp.x, _bp.z, pen > -F.dentMargin ? pen + F.dentMargin : 0, 0);
+  }
+}
+
+const discMoving = new Array(MAX_RINGS).fill(false);
+function updateInstances(t, dt) {
+  let rollSum = 0;
+  const T = P.tube, D = P.discs, A = P.anim;
+  const L = tubeLength();
+  const n = Math.min(MAX_RINGS, Math.max(1, Math.round(T.rings)));
+  const pitch = n > 1 ? L / (n - 1) : L;
+  const period = Math.max(0.05, A.period);
+  const tt = t / period;
+
+  const dirA = A.slideDir * DEG;
+  const sdx = -Math.cos(dirA), sdz = Math.sin(dirA);
+  const lateral = (u) => A.slideAmp * Math.sin(2 * Math.PI * (u * A.slideLen - tt * A.slideSpeed)) * envelope(u, A.slideTaper) * biasW(u, A.slideBias);
+
+  const discR = Math.max(0.005, D.radius);
+  const orbit = Math.max(0, (T.radius - T.ringWidth / 2 - discR - D.inset) * D.orbitScale);
+  const hold = A.hold, eIn = A.easeIn, eOut = A.easeOut;
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  max d(motion)/d(phase)
+  // ═══════════════════════════════════════════════════════════════════
+
+  const peakRate = Math.max(1, eIn, eOut) / Math.max(0.1, 1 - Math.min(0.9, hold));
+  uBulgeWidth.value = Math.max(1, A.bulgeWidth) * DEG;
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  spring sub-steps (stable for large dt)
+  // ═══════════════════════════════════════════════════════════════════
+
+  const steps = Math.max(1, Math.ceil(dt / (1 / 120)));
+  const h = dt / steps;
+  const useSpring = A.springK > 0 && dt > 0 && springInit;
+  const arr = ringData.array;
+
+  for (let k = 0; k < n; k++) {
+    const u = n > 1 ? k / (n - 1) : 0.5;
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  front ring (k = 0) leads, the rest follow
+    // ═══════════════════════════════════════════════════════════════════
+
+    const p = frac(tt - k * A.delay);
+    const m = motion(p, hold, eIn, eOut);
+    const ang = (D.angle + D.twist * k + D.jitter * jitter[k]) * DEG + A.direction * 2 * Math.PI * m;
+    angArr[k] = ang;
+    const e = 0.002;
+    const dm = (motion(frac(p + e), hold, eIn, eOut) - motion(frac(p - e), hold, eIn, eOut)) / (2 * e);
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  guard the loop seam
+    // ═══════════════════════════════════════════════════════════════════
+
+    const speed01 = Math.abs(dm) < 20 ? Math.min(1, Math.abs(dm) / peakRate) : 0;
+    const movingNow = speed01 > 0.03;
+    if (movingNow !== discMoving[k] && dt > 0) { if (movingNow) audio.discStart(k, n); else audio.discStop(k); }
+    discMoving[k] = movingNow;
+    rollSum += speed01;
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  the ring only swells where the disc is, and mostly while the disc is moving
+    // ═══════════════════════════════════════════════════════════════════
+
+    const target = A.bulgeRest + A.bulgeMove * speed01;
+    if (useSpring) {
+      for (let s2 = 0; s2 < steps; s2++) {
+        velX[k] += (A.springK * (target - offX[k]) - A.springDamp * velX[k]) * h;
+        offX[k] += velX[k] * h;
+      }
+    } else {
+      offX[k] = target; velX[k] = 0;
+    }
+    arr[k * 4] = ang;
+    arr[k * 4 + 1] = offX[k];
+    const lat = lateral(u);
+    const ax = A.waveAmp * Math.sin(2 * Math.PI * (u * A.waveLen - tt * A.waveSpeed)) * envelope(u, A.waveTaper);
+    cx[k] = lat * sdx;
+    cz[k] = lat * sdz;
+    cy[k] = -L / 2 + u * L + ax * pitch;
+  }
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  real time, keeps wobbling while the animation is paused
+  // ═══════════════════════════════════════════════════════════════════
+
+  updateHitSprings(n, frameDt);
+  { let e = 0, sg = 0; for (let k = 0; k < n; k++) { e += Math.abs(hitOff[k]) + Math.hypot(shX[k], shZ[k]); sg += hitOff[k]; } audio.frame(rollSum, e, sg / Math.max(1, n)); }
+  ringData.needsUpdate = true;
+  updateDents(n);
+  springInit = true;
+
+  for (let k = 0; k < n; k++) {
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  tilt each ring to follow the bent centre line
+    // ═══════════════════════════════════════════════════════════════════
+
+    const k0 = Math.max(0, k - 1), k1 = Math.min(n - 1, k + 1);
+    const dy = Math.max(1e-4, cy[k1] - cy[k0]);
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  ring tilt follows the bend: waves scaled by tiltFollow, impact push by pushTilt
+    // ═══════════════════════════════════════════════════════════════════
+
+    const tf = P.anim.tiltFollow, pt = P.ball.pushTilt;
+    const sx = ((cx[k1] - shX[k1] - cx[k0] + shX[k0]) * tf + (shX[k1] - shX[k0]) * pt) / dy;
+    const sz = ((cz[k1] - shZ[k1] - cz[k0] + shZ[k0]) * tf + (shZ[k1] - shZ[k0]) * pt) / dy;
+    const sl = Math.hypot(sx, sz);
+    if (sl > 1e-6) {
+      _axis.set(sz / sl, 0, -sx / sl);
+      _m.makeRotationAxis(_axis, Math.atan(sl));
+    } else {
+      _m.identity();
+    }
+    _m.setPosition(cx[k], cy[k], cz[k]);
+    outer.setMatrixAt(k, _m);
+    liner.setMatrixAt(k, _m);
+
+    const ang = angArr[k];
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  rides out with its bulge, knocked in by impact dents
+    // ═══════════════════════════════════════════════════════════════════
+
+    const rideR = orbit + A.discRide * offX[k] + discHitR[k];
+    _t.makeTranslation(Math.cos(ang) * rideR, 0, Math.sin(ang) * rideR);
+    _d.multiplyMatrices(_m, _t);
+    discs.setMatrixAt(k, _d);
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  keep the disc's tube-local transform + velocity for ball collisions
+    // ═══════════════════════════════════════════════════════════════════
+
+    const e = _d.elements, i3 = k * 3;
+    if (frameDt > 0 && discKnown[k]) {
+      discVelL[i3] = (e[12] - discPosL[i3]) / frameDt; discVelL[i3 + 1] = (e[13] - discPosL[i3 + 1]) / frameDt; discVelL[i3 + 2] = (e[14] - discPosL[i3 + 2]) / frameDt;
+    } else { discVelL[i3] = discVelL[i3 + 1] = discVelL[i3 + 2] = 0; }
+    discPosL[i3] = e[12]; discPosL[i3 + 1] = e[13]; discPosL[i3 + 2] = e[14];
+    discLM[k].copy(_d); discInvM[k].copy(_d).invert(); discKnown[k] = 1;
+  }
+  discCount = n;
+  outer.count = liner.count = discs.count = n;
+  outer.instanceMatrix.needsUpdate = true;
+  liner.instanceMatrix.needsUpdate = true;
+  discs.instanceMatrix.needsUpdate = true;
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  balls: click to throw, impacts dent the rings inward
+// ═══════════════════════════════════════════════════════════════════
+
+const hitOff = new Float32Array(MAX_RINGS), hitVel = new Float32Array(MAX_RINGS), hitAcc = new Float32Array(MAX_RINGS);
+const discLM = Array.from({ length: MAX_RINGS }, () => new THREE.Matrix4()), discInvM = Array.from({ length: MAX_RINGS }, () => new THREE.Matrix4());
+const discPosL = new Float32Array(MAX_RINGS * 3), discVelL = new Float32Array(MAX_RINGS * 3), discKnown = new Uint8Array(MAX_RINGS);
+let discCount = 0;
+const shX = new Float32Array(MAX_RINGS), shZ = new Float32Array(MAX_RINGS), shVX = new Float32Array(MAX_RINGS), shVZ = new Float32Array(MAX_RINGS);
+const shAX = new Float32Array(MAX_RINGS), shAZ = new Float32Array(MAX_RINGS);
+function updateHitSprings(n, dt) {
+  const B = P.ball, arr = ringData.array;
+  uHitWidth.value = Math.max(1, B.dentWidth) * DEG;
+  const steps = Math.max(1, Math.ceil(dt / (1 / 240))), h = dt / Math.max(1, steps);
+  if (dt > 0) for (let st = 0; st < steps; st++) {
+    for (let k = 0; k < n; k++) {
+      const l = k > 0 ? hitOff[k - 1] : hitOff[k], r = k < n - 1 ? hitOff[k + 1] : hitOff[k];
+
+
+
+      // ═══════════════════════════════════════════════════════════════════
+      //  each ring springs back to round; the ripple term lets the dent travel into neighbouring rings
+      // ═══════════════════════════════════════════════════════════════════
+
+      hitAcc[k] = -B.stiffness * hitOff[k] - B.damping * hitVel[k] + B.ripple * (l + r - 2 * hitOff[k]);
+    }
+    for (let k = 0; k < n; k++) {
+      hitVel[k] += hitAcc[k] * h;
+      hitOff[k] = Math.max(-B.dentMax, Math.min(B.dentMax, hitOff[k] + hitVel[k] * h));
+    }
+  }
+  for (let k = 0; k < n; k++) arr[k * 4 + 3] = hitOff[k];
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  whole-ring push: every ring is also knocked off-centre, springs back and drags its neighbours (slinky wobble)
+  // ═══════════════════════════════════════════════════════════════════
+
+  if (dt > 0) for (let st = 0; st < steps; st++) {
+    for (let k = 0; k < n; k++) {
+      const lx = k > 0 ? shX[k - 1] : shX[k], rx = k < n - 1 ? shX[k + 1] : shX[k];
+      const lz = k > 0 ? shZ[k - 1] : shZ[k], rz = k < n - 1 ? shZ[k + 1] : shZ[k];
+      shAX[k] = -B.pushSpring * shX[k] - B.pushDamp * shVX[k] + B.pushCouple * (lx + rx - 2 * shX[k]);
+      shAZ[k] = -B.pushSpring * shZ[k] - B.pushDamp * shVZ[k] + B.pushCouple * (lz + rz - 2 * shZ[k]);
+    }
+    for (let k = 0; k < n; k++) {
+      shVX[k] += shAX[k] * h; shVZ[k] += shAZ[k] * h;
+      shX[k] += shVX[k] * h; shZ[k] += shVZ[k] * h;
+      const l = Math.hypot(shX[k], shZ[k]);
+      if (l > B.pushMax) { shX[k] *= B.pushMax / l; shZ[k] *= B.pushMax / l; }
+    }
+  }
+  for (let k = 0; k < n; k++) { cx[k] += shX[k]; cz[k] += shZ[k]; }
+  updateDiscHits(n, dt);
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  Discs vs. impact wobble: each disc must stay inside its ring wall. Where the dent reaches the disc's angle the
+//  wall shoves it inward and it keeps some of that speed, so it hops off its path and springs back.
+// ═══════════════════════════════════════════════════════════════════
+
+const discHitR = new Float32Array(MAX_RINGS), discHitV = new Float32Array(MAX_RINGS), wallPrev = new Float32Array(MAX_RINGS);
+function updateDiscHits(n, dt) {
+  const B = P.ball, sw = Math.max(1, B.dentWidth) * DEG, arr = ringData.array;
+  for (let k = 0; k < n; k++) {
+    let d = (angArr[k] - arr[k * 4 + 2]) % (2 * Math.PI);
+    if (d > Math.PI) d -= 2 * Math.PI; if (d < -Math.PI) d += 2 * Math.PI;
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  wall offset at the disc
+    // ═══════════════════════════════════════════════════════════════════
+
+    const wall = hitOff[k] * Math.exp(-(d / sw) * (d / sw)) * B.discFollow;
+    if (dt <= 0) { wallPrev[k] = wall; continue; }
+    const wallV = (wall - wallPrev[k]) / dt;
+    wallPrev[k] = wall;
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  pressed against the wall: rides up into outward bulges, springs back to its path otherwise
+    // ═══════════════════════════════════════════════════════════════════
+
+    const rest = Math.max(0, wall);
+    discHitV[k] += (B.discSpring * (rest - discHitR[k]) - B.discDamp * discHitV[k]) * dt;
+    discHitR[k] += discHitV[k] * dt;
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  wall pushed into the disc
+    // ═══════════════════════════════════════════════════════════════════
+
+    if (discHitR[k] > wall) {
+      discHitR[k] = wall;
+      if (discHitV[k] > wallV * B.discJump) discHitV[k] = wallV * B.discJump;
+    }
+    discHitR[k] = Math.max(-0.6, discHitR[k]);
+  }
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  dir -1: hit from outside (dent in), +1: from inside (bulge out)
+// ═══════════════════════════════════════════════════════════════════
+
+function ringImpact(angle, axial, speed, dir = -1) {
+  const B = P.ball, n = Math.min(MAX_RINGS, Math.max(1, Math.round(P.tube.rings)));
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  resting / rolling contact doesn't dent
+  // ═══════════════════════════════════════════════════════════════════
+
+  if (speed < 0.4) return;
+  audio.impact(speed, dir, Math.round((axial + tubeLength() / 2) / (tubeLength() / Math.max(1, n - 1))));
+  for (let k = 0; k < n; k++) {
+    const w = Math.exp(-Math.pow((cy[k] - axial) / Math.max(0.05, B.dentSpread), 2));
+    if (w < 0.03) continue;
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  dent sits where the ball struck
+    // ═══════════════════════════════════════════════════════════════════
+
+    ringData.array[k * 4 + 2] = angle;
+    hitVel[k] += dir * speed * B.dentGain * 30 * w;
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  the whole ring is shoved along the impact direction
+    // ═══════════════════════════════════════════════════════════════════
+
+    const push = dir * speed * B.pushGain * 30 * w;
+    shVX[k] += push * Math.cos(angle); shVZ[k] += push * Math.sin(angle);
+  }
+}
+
+const ballMat = new THREE.MeshPhysicalNodeMaterial({ envMap: envRT.texture, color: P.ball.color, roughness: P.ball.roughness, clearcoat: 1, clearcoatRoughness: 0.05 });
+const ballGeo = new THREE.SphereGeometry(1, 48, 32);
+const balls = [];
+function applyBall() { ballMat.color.set(P.ball.color); ballMat.roughness = P.ball.roughness; ballMat.envMapIntensity = P.env.intensity; uBallColor.value.set(P.ball.color); uBallInner.value.set(P.ball.innerColor); }
+
+const raycaster = new THREE.Raycaster();
+const _ndc = new THREE.Vector2(), _inv = new THREE.Matrix4(), _q = new THREE.Vector3(), _n = new THREE.Vector3(), _tmp = new THREE.Vector3();
+function throwBall(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  _ndc.set(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
+  raycaster.setFromCamera(_ndc, camera);
+  const B = P.ball, g = B.gravity;
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  aim: where the pointer ray meets the tube (analytic cylinder), else a point 10 units out
+  // ═══════════════════════════════════════════════════════════════════
+
+  tilt.updateMatrixWorld(true);
+  _inv.copy(tilt.matrixWorld).invert();
+  const o = raycaster.ray.origin.clone().applyMatrix4(_inv), dvec = raycaster.ray.direction.clone().transformDirection(_inv);
+  const Ro = P.tube.radius + P.tube.ringWidth / 2, L = tubeLength();
+  let target = null;
+  const a = dvec.x * dvec.x + dvec.z * dvec.z, b = 2 * (o.x * dvec.x + o.z * dvec.z), c = o.x * o.x + o.z * o.z - Ro * Ro, disc = b * b - 4 * a * c;
+  if (a > 1e-8 && disc >= 0) {
+    const t = (-b - Math.sqrt(disc)) / (2 * a);
+    const y = o.y + dvec.y * t;
+    if (t > 0 && Math.abs(y) <= L / 2 + P.tube.ringThick) target = raycaster.ray.at(t, new THREE.Vector3());
+  }
+  if (!target && a > 1e-8) {
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  pointer looks into the open end: aim at the far side of the inner wall
+    // ═══════════════════════════════════════════════════════════════════
+
+    const Ri = P.tube.radius - P.tube.ringWidth / 2 - B.radius;
+    const ci = o.x * o.x + o.z * o.z - Ri * Ri, di = b * b - 4 * a * ci;
+    if (di >= 0) {
+      const t = (-b + Math.sqrt(di)) / (2 * a);
+      const y = o.y + dvec.y * t;
+      if (t > 0 && Math.abs(y) <= L / 2) target = raycaster.ray.at(t, new THREE.Vector3());
+    }
+  }
+  if (!target) target = raycaster.ray.at(10, new THREE.Vector3());
+  audio.whoosh();
+  const start = camera.position.clone().addScaledVector(raycaster.ray.direction, 0.6).add(new THREE.Vector3(0, -0.15, 0));
+  const dist = start.distanceTo(target), T = Math.max(0.12, dist / Math.max(1, B.speed));
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ballistic lob that lands on target
+  // ═══════════════════════════════════════════════════════════════════
+
+  const vel = target.clone().sub(start).divideScalar(T); vel.y += 0.5 * g * T;
+  let ball = balls.length < MAX_BALLS ? null : balls.reduce((m, x) => (x.age > m.age ? x : m));
+  if (!ball) {
+    const mesh = new THREE.Mesh(ballGeo, ballMat);
+    mesh.castShadow = true;
+    scene.add(mesh);
+    ball = { mesh, pos: new THREE.Vector3(), vel: new THREE.Vector3(), age: 0, spinAxis: new THREE.Vector3(1, 0, 0) };
+    balls.push(ball);
+  }
+  ball.pos.copy(start); ball.vel.copy(vel); ball.age = 0; ball.mesh.visible = true;
+}
+
+function updateBalls(dt) {
+  const B = P.ball, r = B.radius, Ro = P.tube.radius + P.tube.ringWidth / 2, Ri = P.tube.radius - P.tube.ringWidth / 2, L = tubeLength();
+  tilt.updateMatrixWorld(true);
+  _inv.copy(tilt.matrixWorld).invert();
+  for (let i = 0; i < SHADOW_SLOTS; i++) ballVecs[i].set(0, -1000, 0, 0.1);
+  balls.forEach((ball, i) => {
+    if (!ball.mesh.visible) return;
+    ball.age += dt;
+    if (ball.stuck) {
+      const S = ball.stuck, nR = Math.min(MAX_RINGS, Math.max(1, Math.round(P.tube.rings)));
+      const k = Math.min(nR - 1, Math.max(0, Math.round((S.y + L / 2) / (L / Math.max(1, nR - 1)))));
+
+
+
+      // ═══════════════════════════════════════════════════════════════════
+      //  ride with the dent / bulge of that ring
+      // ═══════════════════════════════════════════════════════════════════
+
+      const rad = (S.sgn > 0 ? Ro + r : Ri - r) + hitOff[k];
+      _q.set(Math.cos(S.theta) * rad + shX[k], S.y, Math.sin(S.theta) * rad + shZ[k]).applyMatrix4(tilt.matrixWorld);
+      ball.pos.copy(_q);
+    }
+    const steps = ball.stuck ? 0 : Math.max(1, Math.ceil(dt * ball.vel.length() / (r * 0.5)));
+    const h = dt / Math.max(1, steps);
+    for (let st = 0; st < steps && !ball.stuck; st++) {
+      ball.vel.y -= B.gravity * h;
+      ball.pos.addScaledVector(ball.vel, h);
+
+
+
+      // ═══════════════════════════════════════════════════════════════════
+      //  tube: outer surface of the ring stack (in tube-local space)
+      // ═══════════════════════════════════════════════════════════════════
+
+      _q.copy(ball.pos).applyMatrix4(_inv);
+      const rr = Math.max(1e-5, Math.hypot(_q.x, _q.z));
+      if (Math.abs(_q.y) < L / 2 + P.tube.ringThick / 2) {
+        const outside = rr > (Ri + Ro) / 2;
+
+
+
+        // ═══════════════════════════════════════════════════════════════════
+        //  against the outer surface
+        // ═══════════════════════════════════════════════════════════════════
+
+        const hitOut = outside && rr < Ro + r;
+
+
+
+        // ═══════════════════════════════════════════════════════════════════
+        //  against the inner surface (ball inside the tube)
+        // ═══════════════════════════════════════════════════════════════════
+
+        const hitIn = !outside && rr > Ri - r;
+        if (hitOut || hitIn) {
+
+
+
+          // ═══════════════════════════════════════════════════════════════════
+          //  surface normal: outward outside, inward inside
+          // ═══════════════════════════════════════════════════════════════════
+
+          const sgn = hitOut ? 1 : -1;
+          _n.set(sgn * _q.x / rr, 0, sgn * _q.z / rr).transformDirection(tilt.matrixWorld);
+          const vn = ball.vel.dot(_n);
+          if (vn < 0) {
+            ringImpact(Math.atan2(_q.z, _q.x), _q.y, -vn, hitOut ? -1 : 1);
+            ball.vel.addScaledVector(_n, -(1 + B.bounce) * vn);
+            _tmp.copy(_n).multiplyScalar(ball.vel.dot(_n));
+
+
+
+            // ═══════════════════════════════════════════════════════════════════
+            //  tangential friction
+            // ═══════════════════════════════════════════════════════════════════
+
+            ball.vel.sub(_tmp).multiplyScalar(B.friction).add(_tmp);
+            if (B.shatter && !ball.stuck && -vn > B.shatterSpeed) {
+
+
+
+              // ═══════════════════════════════════════════════════════════════════
+              //  stick in the dent, ride the spring-back, then break a few frames later
+              // ═══════════════════════════════════════════════════════════════════
+
+              const halfPeriod = Math.PI / Math.sqrt(Math.max(1, B.stiffness));
+              ball.stuck = { theta: Math.atan2(_q.z, _q.x), y: _q.y, sgn: hitOut ? 1 : -1, n: _n.clone(),
+                             at: ball.age + halfPeriod + Math.max(0, B.shatterFrames) / 60 };
+            }
+          }
+          const target = hitOut ? Ro + r : Ri - r;
+          _q.x *= target / rr; _q.z *= target / rr;
+          ball.pos.copy(_q).applyMatrix4(tilt.matrixWorld);
+        }
+      }
+      collideDiscs(ball, r);
+
+
+
+      // ═══════════════════════════════════════════════════════════════════
+      //  floor
+      // ═══════════════════════════════════════════════════════════════════
+
+      if (ball.pos.y < r) {
+        ball.pos.y = r;
+        if (ball.vel.y < 0) { audio.bounce(-ball.vel.y); ball.vel.y = -ball.vel.y * B.bounce; }
+        ball.vel.x *= 1 - (1 - B.friction) * 0.2; ball.vel.z *= 1 - (1 - B.friction) * 0.2;
+      }
+    }
+    if (ball.stuck) {
+      if (ball.age >= ball.stuck.at) {
+        const n = ball.stuck.n; ball.stuck = null;
+        ball.mesh.position.copy(ball.pos);
+        spawnShatter(ball, n);
+        ball.mesh.visible = false;
+        return;
+      }
+    }
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  roll/spin with the motion
+    // ═══════════════════════════════════════════════════════════════════
+
+    const sp = Math.hypot(ball.vel.x, ball.vel.z);
+    if (sp > 1e-3) { ball.spinAxis.set(ball.vel.z, 0, -ball.vel.x).normalize(); ball.mesh.rotateOnWorldAxis(ball.spinAxis, sp * dt / r); }
+    const fade = Math.min(1, Math.max(0, (B.life - ball.age) / 0.4));
+    if (fade <= 0) { ball.mesh.visible = false; return; }
+    ball.mesh.position.copy(ball.pos);
+    ball.mesh.scale.setScalar(r * fade);
+    ballVecs[i].set(ball.pos.x, ball.pos.y, ball.pos.z, r * fade);
+  });
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  Ball vs. disc: each disc is a moving solid cylinder (kinematic). The bounce uses the velocity relative to
+//  the moving disc (restitution + friction), and the disc gets a small radial knock from the impulse.
+// ═══════════════════════════════════════════════════════════════════
+
+const _rotT = new THREE.Matrix3(), _rotD = new THREE.Matrix3();
+const _pl = new THREE.Vector3(), _cl = new THREE.Vector3(), _nl = new THREE.Vector3(), _nw = new THREE.Vector3();
+const _vd = new THREE.Vector3(), _vr = new THREE.Vector3(), _vt = new THREE.Vector3(), _qt = new THREE.Vector3();
+function collideDiscs(ball, r) {
+  if (!discCount) return;
+  const B = P.ball, D = P.discs;
+  const Rd = Math.max(0.005, D.radius), hd = Math.max(0.0025, P.tube.ringThick * D.thick / 2);
+  _rotT.setFromMatrix4(tilt.matrixWorld);
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ball centre in tube space
+  // ═══════════════════════════════════════════════════════════════════
+
+  _qt.copy(ball.pos).applyMatrix4(_inv);
+  for (let k = 0; k < discCount; k++) {
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  ... and in this disc's space (axis = Y)
+    // ═══════════════════════════════════════════════════════════════════
+
+    _pl.copy(_qt).applyMatrix4(discInvM[k]);
+    const rad = Math.hypot(_pl.x, _pl.z);
+    if (Math.abs(_pl.y) > hd + r || rad > Rd + r) continue;
+    let dist;
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  centre inside the disc: leave by the shallowest side
+    // ═══════════════════════════════════════════════════════════════════
+
+    if (rad <= Rd && Math.abs(_pl.y) <= hd) {
+      const penY = hd - Math.abs(_pl.y), penR = Rd - rad;
+      if (penY < penR) { _nl.set(0, Math.sign(_pl.y) || 1, 0); _cl.set(_pl.x, _nl.y * hd, _pl.z); }
+      else { _nl.set(_pl.x / (rad || 1), 0, _pl.z / (rad || 1)); _cl.set(_nl.x * Rd, _pl.y, _nl.z * Rd); }
+      dist = 0;
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  closest point on the solid cylinder
+    // ═══════════════════════════════════════════════════════════════════
+
+    } else {
+      const sc = rad > Rd ? Rd / rad : 1;
+      _cl.set(_pl.x * sc, Math.max(-hd, Math.min(hd, _pl.y)), _pl.z * sc);
+      _nl.subVectors(_pl, _cl);
+      dist = _nl.length();
+      if (dist >= r || dist < 1e-6) continue;
+      _nl.divideScalar(dist);
+    }
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  normal to world
+    // ═══════════════════════════════════════════════════════════════════
+
+    _rotD.setFromMatrix4(discLM[k]);
+    _nw.copy(_nl).applyMatrix3(_rotD).applyMatrix3(_rotT).normalize();
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  push the ball out of the disc
+    // ═══════════════════════════════════════════════════════════════════
+
+    _pl.copy(_cl).addScaledVector(_nl, r).applyMatrix4(discLM[k]).applyMatrix4(tilt.matrixWorld);
+    ball.pos.copy(_pl);
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  relative velocity against the moving disc
+    // ═══════════════════════════════════════════════════════════════════
+
+    const i3 = k * 3;
+    _vd.set(discVelL[i3], discVelL[i3 + 1], discVelL[i3 + 2]).applyMatrix3(_rotT);
+    _vr.subVectors(ball.vel, _vd);
+    const vn = _vr.dot(_nw);
+    if (vn >= 0) continue;
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  tangential part
+    // ═══════════════════════════════════════════════════════════════════
+
+    _vt.copy(_vr).addScaledVector(_nw, -vn);
+    const jn = -(1 + B.discBounce) * vn;
+    audio.clink(jn);
+    const vtLen = _vt.length();
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  Coulomb friction, capped
+    // ═══════════════════════════════════════════════════════════════════
+
+    const fr = vtLen > 1e-6 ? Math.min(1, B.discFriction * jn / vtLen) : 0;
+    _vr.addScaledVector(_nw, jn).addScaledVector(_vt, -fr);
+    ball.vel.copy(_vr).add(_vd);
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  knock the disc radially (only the part of the impulse along its orbit radius)
+    // ═══════════════════════════════════════════════════════════════════
+
+    const ang = angArr[k];
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  world -> tube space
+    // ═══════════════════════════════════════════════════════════════════
+
+    _vt.copy(_nw).applyMatrix3(_rotT.clone().transpose());
+    const radial = -(_vt.x * Math.cos(ang) + _vt.z * Math.sin(ang));
+    discHitV[k] += radial * jn * B.discKnock;
+  }
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  voronoi shatter
+//  Unit sphere cut into convex Voronoi cells: shell samples + interior samples projected onto the shared cell faces,
+//  hulled per cell. Faces on the sphere keep smooth normals ('shell' = 1); the cut faces are flat and get the inner colour.
+// ═══════════════════════════════════════════════════════════════════
+
+function buildFracture(cells, seed) {
+  const rnd = mulberry32(seed);
+  const inBall = () => { for (;;) { const v = new THREE.Vector3(rnd() * 2 - 1, rnd() * 2 - 1, rnd() * 2 - 1); if (v.lengthSq() <= 1) return v; } };
+  const seeds = Array.from({ length: cells }, () => inBall().multiplyScalar(0.85));
+  const pts = seeds.map(() => []);
+  const nearest2 = (p) => { let a = -1, b = -1, da = 1e9, db = 1e9;
+    for (let i = 0; i < seeds.length; i++) { const d = p.distanceToSquared(seeds[i]); if (d < da) { db = da; b = a; da = d; a = i; } else if (d < db) { db = d; b = i; } }
+    return [a, b]; };
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  shell samples (fibonacci sphere)
+  // ═══════════════════════════════════════════════════════════════════
+
+  const NS = 1400, ga = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < NS; i++) {
+    const y = 1 - (i + 0.5) * 2 / NS, rr = Math.sqrt(1 - y * y), th = ga * i;
+    const p = new THREE.Vector3(Math.cos(th) * rr, y, Math.sin(th) * rr);
+    pts[nearest2(p)[0]].push(p);
+  }
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  interior samples projected onto their nearest Voronoi face -> shared, gap-free cut faces
+  // ═══════════════════════════════════════════════════════════════════
+
+  const m = new THREE.Vector3(), n = new THREE.Vector3();
+  for (let i = 0; i < 6000; i++) {
+    const p = inBall();
+    const [a, b] = nearest2(p);
+    m.addVectors(seeds[a], seeds[b]).multiplyScalar(0.5);
+    n.subVectors(seeds[b], seeds[a]).normalize();
+    const q = p.clone().addScaledVector(n, -p.clone().sub(m).dot(n));
+    if (q.lengthSq() > 1) continue;
+    const [a2, b2] = nearest2(q);
+    const ok = (a2 === a || a2 === b) && (b2 === a || b2 === b);
+    if (!ok) continue;
+    pts[a].push(q); pts[b].push(q.clone());
+  }
+  const pieces = [];
+  for (let i = 0; i < cells; i++) {
+    if (pts[i].length < 8) continue;
+    let g;
+    try { g = new ConvexGeometry(pts[i]); } catch (e) { continue; }
+    const pos = g.attributes.position, nor = g.attributes.normal;
+    const shell = new Float32Array(pos.count);
+    const v = new THREE.Vector3();
+    for (let f = 0; f < pos.count; f += 3) {
+      let onShell = true;
+      for (let j = 0; j < 3; j++) { v.fromBufferAttribute(pos, f + j); if (v.length() < 0.975) onShell = false; }
+      for (let j = 0; j < 3; j++) {
+        shell[f + j] = onShell ? 1 : 0;
+        if (onShell) { v.fromBufferAttribute(pos, f + j).normalize(); nor.setXYZ(f + j, v.x, v.y, v.z); }
+      }
+    }
+    g.setAttribute('shell', new THREE.BufferAttribute(shell, 1));
+    g.computeBoundingBox();
+    const c = new THREE.Vector3(); g.boundingBox.getCenter(c);
+    g.translate(-c.x, -c.y, -c.z);
+    g.computeBoundingSphere();
+    pieces.push({ geometry: g, center: c });
+  }
+  return pieces;
+}
+
+let fractureSets = [];
+function rebuildFractures() {
+  const cells = Math.max(3, Math.min(40, Math.round(P.ball.pieces)));
+  fractureSets = [buildFracture(cells, 11), buildFracture(cells, 29)];
+}
+const uBallColor = uniform(new THREE.Color(P.ball.color)), uBallInner = uniform(new THREE.Color(P.ball.innerColor));
+const pieceColor = mix(uBallInner, uBallColor, attribute('shell', 'float'));
+const MAX_SHATTERS = 4;
+const shatters = [];
+const _pq = new THREE.Quaternion(), _pc = new THREE.Vector3();
+function spawnShatter(ball, n) {
+  audio.shatter();
+  if (!fractureSets.length) rebuildFractures();
+  const B = P.ball, set = fractureSets[Math.floor(Math.random() * fractureSets.length)];
+  let sh = shatters.find((x) => !x.active);
+  if (!sh) {
+    if (shatters.length < MAX_SHATTERS) {
+      const mat = new THREE.MeshPhysicalNodeMaterial({ envMap: envRT.texture, transparent: true, roughness: B.roughness, clearcoat: 1, clearcoatRoughness: 0.05 });
+      mat.colorNode = pieceColor;
+      sh = { mat, pieces: [], active: false, age: 0, set: null };
+      shatters.push(sh);
+    } else sh = shatters.reduce((m, x) => (x.age > m.age ? x : m));
+  }
+  if (sh.set !== set) {
+    for (const pc of sh.pieces) scene.remove(pc.mesh);
+    sh.pieces = set.map((f) => {
+      const mesh = new THREE.Mesh(f.geometry, sh.mat);
+      mesh.castShadow = true;
+      scene.add(mesh);
+      return { mesh, center: f.center, vel: new THREE.Vector3(), axis: new THREE.Vector3(), w: 0 };
+    });
+    sh.set = set;
+  }
+  const r = B.radius;
+  _pq.copy(ball.mesh.quaternion);
+  for (const pc of sh.pieces) {
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  piece centre relative to the ball
+    // ═══════════════════════════════════════════════════════════════════
+
+    _pc.copy(pc.center).applyQuaternion(_pq);
+    pc.mesh.position.copy(ball.pos).addScaledVector(_pc, r);
+    pc.mesh.quaternion.copy(_pq);
+    pc.mesh.scale.setScalar(r);
+    pc.mesh.visible = true;
+    const out = _pc.lengthSq() > 1e-6 ? _pc.clone().normalize() : new THREE.Vector3(0, 1, 0);
+    pc.vel.copy(ball.vel).multiplyScalar(B.keep)
+      .addScaledVector(out, B.burst * (0.5 + Math.random()))
+      .addScaledVector(n, B.burst * 0.4 * Math.random());
+    pc.axis.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
+    pc.w = B.spin * (0.3 + Math.random());
+  }
+  sh.mat.roughness = B.roughness;
+  sh.mat.opacity = 1;
+  sh.age = 0;
+  sh.active = true;
+}
+function updateShatters(dt) {
+  const B = P.ball, life = Math.max(0.1, B.pieceLife);
+  let slot = MAX_BALLS;
+  for (const sh of shatters) {
+    if (!sh.active) continue;
+    sh.age += dt;
+    const t = sh.age / life;
+    if (t >= 1) { sh.active = false; for (const pc of sh.pieces) pc.mesh.visible = false; continue; }
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  hold briefly, then fade out smoothly
+    // ═══════════════════════════════════════════════════════════════════
+
+    const fade = 1 - smooth01((t - 0.15) / 0.85);
+    sh.mat.opacity = fade;
+    sh.mat.depthWrite = fade > 0.6;
+    let cxs = 0, cys = 0, czs = 0;
+    for (const pc of sh.pieces) {
+      const m = pc.mesh;
+      pc.vel.y -= B.gravity * dt;
+      m.position.addScaledVector(pc.vel, dt);
+      const pr = B.radius * 0.35;
+      if (m.position.y < pr) {
+        m.position.y = pr;
+        if (pc.vel.y < 0) pc.vel.y = -pc.vel.y * B.pieceBounce;
+        pc.vel.x *= 0.8; pc.vel.z *= 0.8; pc.w *= 0.7;
+      }
+      m.rotateOnWorldAxis(pc.axis, pc.w * dt);
+      m.scale.setScalar(B.radius * (0.75 + 0.25 * fade));
+      cxs += m.position.x; cys += m.position.y; czs += m.position.z;
+    }
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  rough soft shadow for the cloud of pieces
+    // ═══════════════════════════════════════════════════════════════════
+
+    if (slot < SHADOW_SLOTS) {
+      const k = sh.pieces.length || 1;
+      ballVecs[slot++].set(cxs / k, cys / k, czs / k, B.radius * 0.7 * fade);
+    }
+  }
+}
+const smooth01 = (x) => { const t = Math.min(1, Math.max(0, x)); return t * t * (3 - 2 * t); };
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  precompute the fracture patterns once, off the first frame
+// ═══════════════════════════════════════════════════════════════════
+
+setTimeout(rebuildFractures, 300);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  click (not drag) on the canvas throws a ball
+// ═══════════════════════════════════════════════════════════════════
+
+let _down = null;
+canvas.addEventListener('pointerdown', (e) => { _down = { x: e.clientX, y: e.clientY, t: performance.now() }; });
+canvas.addEventListener('pointerup', (e) => {
+  if (!_down) return;
+  const moved = Math.hypot(e.clientX - _down.x, e.clientY - _down.y), quick = performance.now() - _down.t < 350;
+  _down = null;
+  if (moved < 6 && quick) throwBall(e.clientX, e.clientY);
+});
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  light
+// ═══════════════════════════════════════════════════════════════════
+
+const key = new THREE.DirectionalLight(0xffffff, 2);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 1;
+key.shadow.camera.far = 40;
+scene.add(key);
+scene.add(key.target);
+function updateShadowCamera() {
+  const r = tubeLength() / 2 + P.tube.radius + 1.5;
+  const c = key.shadow.camera;
+  c.left = -r; c.right = r; c.top = r; c.bottom = -r;
+  c.updateProjectionMatrix();
+}
+const SHADOW_TYPES = { PCF: THREE.PCFShadowMap, VSM: THREE.VSMShadowMap, Basic: THREE.BasicShadowMap };
+function applyLight() {
+  const Lt = P.light;
+  key.color.set(Lt.color);
+  key.intensity = Lt.intensity;
+  const el = Lt.el * DEG, az = Lt.az * DEG;
+  key.position.set(Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az)).multiplyScalar(16);
+  key.target.position.set(0, 0, 0);
+  key.castShadow = Lt.shadows;
+  renderer.shadowMap.enabled = Lt.shadows;
+  renderer.shadowMap.type = SHADOW_TYPES[Lt.type] ?? THREE.VSMShadowMap;
+  key.shadow.radius = Lt.radius;
+  key.shadow.blurSamples = Math.max(2, Math.round(Lt.blurSamples));
+  key.shadow.bias = Lt.bias;
+  key.shadow.normalBias = Lt.normalBias;
+  uSoftK.value = 1 / Math.max(0.01, Math.tan(Math.max(0.5, Lt.softSize) * DEG / 2) * 2);
+  uSoftStrength.value = Lt.softStrength;
+  uMapStrength.value = Lt.mapStrength;
+  uAoStrength.value = Lt.aoStrength;
+  uAoRadius.value = Math.max(0.01, Lt.aoRadius);
+  uShadowTint.value.set(Lt.shadowTint);
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  background / fog + resize
+// ═══════════════════════════════════════════════════════════════════
+
+function applyBackground() {
+  const F = P.floor;
+  scene.background = new THREE.Color(F.background);
+  if (F.fog) {
+    if (!scene.fog) scene.fog = new THREE.Fog(new THREE.Color(F.background), F.fogNear, F.fogFar);
+    scene.fog.color.set(F.background);
+    scene.fog.near = F.fogNear;
+    scene.fog.far = F.fogFar;
+  } else {
+    scene.fog = null;
+  }
+}
+function resize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  camera
+// ═══════════════════════════════════════════════════════════════════
+
+const tubeCenterY = () => P.tube.radius + P.tube.ringWidth / 2 + P.tube.hover;
+const _target = new THREE.Vector3();
+const _v = new THREE.Vector3();
+let syncingCamera = false;
+function applyCamera() {
+  const C = P.camera;
+  C.el = Math.max(2, C.el);
+  const el = C.el * DEG, az = C.az * DEG;
+  _target.set(0, tubeCenterY() + C.targetY, 0);
+  camera.position.set(Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az)).multiplyScalar(C.dist).add(_target);
+  camera.fov = C.fov;
+  camera.updateProjectionMatrix();
+  controls.target.copy(_target);
+  controls.enabled = C.orbit;
+  syncingCamera = true;
+  controls.update();
+  syncingCamera = false;
+}
+controls.addEventListener('change', () => {
+  if (syncingCamera) return;
+  const C = P.camera;
+  _v.copy(camera.position).sub(controls.target);
+  C.dist = _v.length();
+  C.el = Math.asin(Math.max(-1, Math.min(1, _v.y / C.dist))) / DEG;
+  C.az = Math.atan2(_v.x, _v.z) / DEG;
+  C.targetY = controls.target.y - tubeCenterY();
+  refreshFolder(camFolder);
+});
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  sound: procedural, dub-flavoured
+//  Everything is synthesized with Web Audio. The context is created / resumed on the first user gesture
+//  (pointer, touch, key), which is what mobile browsers require; after that all scene events make sound.
+// ═══════════════════════════════════════════════════════════════════
+
+const audio = (() => {
+  const S = () => P.sound;
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  minor pentatonic
+  // ═══════════════════════════════════════════════════════════════════
+
+  const SCALE = [0, 3, 5, 7, 10];
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  D3
+  // ═══════════════════════════════════════════════════════════════════
+
+  const BASE = 146.83;
+  const noteHz = (i, oct = 0) => BASE * Math.pow(2, (SCALE[((i % 5) + 5) % 5] + 12 * (Math.floor(i / 5) + oct)) / 12);
+  let ctx = null, ready = false;
+  let master, comp, dry, delayIn, delayL, delayR, fbL, fbR, dlLP, dlHP, delayOut, revIn, revOut, conv;
+  let atmoGain, rollGain, rollFilter, wobbleOsc, wobbleGain, subGain, subLfoGain, padFilter, padLfo;
+  let noiseBuf = null, crackleBuf = null, subLfoNode = null;
+  let throwUntil = 0;
+
+  function makeNoise(seconds, fn) {
+    const b = ctx.createBuffer(2, Math.floor(ctx.sampleRate * seconds), ctx.sampleRate);
+    for (let c = 0; c < 2; c++) { const d = b.getChannelData(c); for (let i = 0; i < d.length; i++) d[i] = fn(i, d.length); }
+    return b;
+  }
+  function build() {
+    ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
+    comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -16; comp.knee.value = 12; comp.ratio.value = 4; comp.attack.value = 0.004; comp.release.value = 0.25;
+    master = ctx.createGain(); master.gain.value = 0;
+    comp.connect(master).connect(ctx.destination);
+    dry = ctx.createGain(); dry.connect(comp);
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  dub delay: stereo ping-pong, band-limited feedback loop
+    // ═══════════════════════════════════════════════════════════════════
+
+    delayIn = ctx.createGain();
+    delayL = ctx.createDelay(4); delayR = ctx.createDelay(4);
+    fbL = ctx.createGain(); fbR = ctx.createGain();
+    dlLP = ctx.createBiquadFilter(); dlLP.type = 'lowpass'; dlLP.frequency.value = 2200; dlLP.Q.value = 0.7;
+    dlHP = ctx.createBiquadFilter(); dlHP.type = 'highpass'; dlHP.frequency.value = 260;
+    const merger = ctx.createChannelMerger(2);
+    delayOut = ctx.createGain();
+    delayIn.connect(dlHP).connect(dlLP).connect(delayL);
+    delayL.connect(fbL).connect(delayR);
+    delayR.connect(fbR).connect(dlHP);
+    delayL.connect(merger, 0, 0); delayR.connect(merger, 0, 1);
+    merger.connect(delayOut).connect(comp);
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  reverb: generated stereo impulse, long and dark
+    // ═══════════════════════════════════════════════════════════════════
+
+    conv = ctx.createConvolver();
+    conv.buffer = makeNoise(3.8, (i, n) => (Math.random() * 2 - 1) * Math.pow(1 - i / n, 3.2));
+    revIn = ctx.createGain(); revOut = ctx.createGain();
+    const revLP = ctx.createBiquadFilter(); revLP.type = 'lowpass'; revLP.frequency.value = 3800;
+    revIn.connect(conv).connect(revLP).connect(revOut).connect(comp);
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  echoes wash into the room
+    // ═══════════════════════════════════════════════════════════════════
+
+    delayOut.connect(revIn);
+
+    noiseBuf = makeNoise(2, () => Math.random() * 2 - 1);
+    crackleBuf = makeNoise(4, () => (Math.random() < 0.00035 ? (Math.random() * 2 - 1) : 0) + (Math.random() * 2 - 1) * 0.004);
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  atmosphere: detuned saw pad (D minor-ish), slow filter drift, sub pulse at the loop rate, hiss + crackle
+    // ═══════════════════════════════════════════════════════════════════
+
+    atmoGain = ctx.createGain(); atmoGain.gain.value = 0; atmoGain.connect(dry);
+    const atmoSend = ctx.createGain(); atmoSend.gain.value = 0.6; atmoGain.connect(atmoSend).connect(revIn);
+    padFilter = ctx.createBiquadFilter(); padFilter.type = 'lowpass'; padFilter.frequency.value = 520; padFilter.Q.value = 3;
+    const padGain = ctx.createGain(); padGain.gain.value = 0.05;
+    padFilter.connect(padGain).connect(atmoGain);
+    for (const [f, det] of [[73.42, -7], [73.42, 6], [110, -4], [110, 5], [174.61, -3], [220, 8]]) {
+      const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f; o.detune.value = det;
+      o.connect(padFilter); o.start();
+    }
+    padLfo = ctx.createOscillator(); padLfo.frequency.value = 0.043;
+    const padLfoAmt = ctx.createGain(); padLfoAmt.gain.value = 260;
+    padLfo.connect(padLfoAmt).connect(padFilter.frequency); padLfo.start();
+
+    const sub = ctx.createOscillator(); sub.type = 'sine'; sub.frequency.value = 36.71;
+    subGain = ctx.createGain(); subGain.gain.value = 0.10;
+    const subLfo = ctx.createOscillator(); subLfo.type = 'sine';
+    subLfoGain = ctx.createGain(); subLfoGain.gain.value = 0.09;
+    subLfo.connect(subLfoGain).connect(subGain.gain);
+    sub.connect(subGain).connect(atmoGain); sub.start(); subLfo.start();
+    subLfoNode = subLfo;
+
+    const hiss = ctx.createBufferSource(); hiss.buffer = noiseBuf; hiss.loop = true;
+    const hissBP = ctx.createBiquadFilter(); hissBP.type = 'bandpass'; hissBP.frequency.value = 5200; hissBP.Q.value = 0.4;
+    const hissG = ctx.createGain(); hissG.gain.value = 0.006;
+    hiss.connect(hissBP).connect(hissG).connect(atmoGain); hiss.start();
+    const crackle = ctx.createBufferSource(); crackle.buffer = crackleBuf; crackle.loop = true;
+    const crHP = ctx.createBiquadFilter(); crHP.type = 'highpass'; crHP.frequency.value = 1800;
+    const crG = ctx.createGain(); crG.gain.value = 0.35;
+    crackle.connect(crHP).connect(crG).connect(atmoGain); crackle.start();
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  continuous: disc rolling rumble + wobble "spring" tone
+    // ═══════════════════════════════════════════════════════════════════
+
+    const roll = ctx.createBufferSource(); roll.buffer = noiseBuf; roll.loop = true;
+    rollFilter = ctx.createBiquadFilter(); rollFilter.type = 'bandpass'; rollFilter.frequency.value = 380; rollFilter.Q.value = 3;
+    rollGain = ctx.createGain(); rollGain.gain.value = 0;
+    roll.connect(rollFilter).connect(rollGain).connect(dry); roll.start();
+    wobbleOsc = ctx.createOscillator(); wobbleOsc.type = 'triangle'; wobbleOsc.frequency.value = 98;
+    wobbleGain = ctx.createGain(); wobbleGain.gain.value = 0;
+    const wobSend = ctx.createGain(); wobSend.gain.value = 0.5;
+    wobbleOsc.connect(wobbleGain); wobbleGain.connect(dry); wobbleGain.connect(wobSend).connect(delayIn);
+    wobbleOsc.start();
+
+    ready = true;
+    apply();
+  }
+
+  function apply() {
+    if (!ready) return;
+    const s = S(), t = ctx.currentTime;
+    master.gain.setTargetAtTime(s.on ? s.volume : 0, t, 0.08);
+    atmoGain.gain.setTargetAtTime(s.atmosphere, t, 0.3);
+    const dt = Math.max(0.02, s.delayTime);
+    delayL.delayTime.setTargetAtTime(dt, t, 0.05); delayR.delayTime.setTargetAtTime(dt, t, 0.05);
+    fbL.gain.setTargetAtTime(s.feedback, t, 0.05); fbR.gain.setTargetAtTime(s.feedback, t, 0.05);
+    delayIn.gain.setTargetAtTime(1, t, 0.05);
+    delayOut.gain.setTargetAtTime(s.delayMix, t, 0.05);
+    revOut.gain.setTargetAtTime(s.reverbMix, t, 0.05);
+    subLfoNode.frequency.setTargetAtTime(1 / Math.max(0.2, P.anim.period / 2), t, 0.1);
+  }
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  one-shot helpers
+  // ═══════════════════════════════════════════════════════════════════
+
+  function env(g, t, a, peak, decay) {
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + a + decay);
+  }
+  function out(node, drySend = 1, dly = 0, rev = 0) {
+    if (drySend) { const g = ctx.createGain(); g.gain.value = drySend; node.connect(g).connect(dry); }
+    if (dly) { const g = ctx.createGain(); g.gain.value = dly; node.connect(g).connect(delayIn); }
+    if (rev) { const g = ctx.createGain(); g.gain.value = rev; node.connect(g).connect(revIn); }
+  }
+  function tone(type, f, t, a, peak, decay, dest) {
+    const o = ctx.createOscillator(); o.type = type; o.frequency.setValueAtTime(f, t);
+    const g = ctx.createGain(); env(g, t, a, peak, decay);
+    o.connect(g); dest(g); o.start(t); o.stop(t + a + decay + 0.05);
+    return o;
+  }
+  function noiseHit(t, freq, q, peak, decay, dest, type = 'bandpass') {
+    const src = ctx.createBufferSource(); src.buffer = noiseBuf;
+    src.playbackRate.value = 0.8 + Math.random() * 0.4;
+    const f = ctx.createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = q;
+    const g = ctx.createGain(); env(g, t, 0.002, peak, decay);
+    src.connect(f).connect(g); dest(g);
+    src.start(t, Math.random() * 1.5); src.stop(t + decay + 0.05);
+    return f;
+  }
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  swell the echo feedback for a moment
+  // ═══════════════════════════════════════════════════════════════════
+
+  function dubThrow(amount) {
+    const s = S(); if (!s.dubThrows) return;
+    const t = ctx.currentTime, fb = Math.min(0.93, s.feedback + 0.3 * amount);
+    for (const g of [fbL, fbR]) { g.gain.cancelScheduledValues(t); g.gain.setTargetAtTime(fb, t, 0.02); g.gain.setTargetAtTime(s.feedback, t + 0.9, 0.5); }
+    dlLP.frequency.cancelScheduledValues(t);
+    dlLP.frequency.setTargetAtTime(900, t, 0.05); dlLP.frequency.setTargetAtTime(2200, t + 0.9, 0.8);
+    throwUntil = t + 1.2;
+  }
+  const live = () => ready && S().on && ctx.state === 'running';
+
+  const api = {
+    apply,
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  unlock on the first gesture (mobile + desktop)
+    // ═══════════════════════════════════════════════════════════════════
+
+    unlock() {
+      try {
+        if (!ctx) build();
+        if (ctx.state !== 'running') ctx.resume();
+
+
+
+        // ═══════════════════════════════════════════════════════════════════
+        //  iOS kick
+        // ═══════════════════════════════════════════════════════════════════
+
+        const b = ctx.createBuffer(1, 1, 22050), src = ctx.createBufferSource(); src.buffer = b; src.connect(ctx.destination); src.start(0);
+
+
+
+      // ═══════════════════════════════════════════════════════════════════
+      //  audio unavailable
+      // ═══════════════════════════════════════════════════════════════════
+
+      } catch (e) {                         }
+    },
+    suspend() { if (ctx && ctx.state === 'running') ctx.suspend(); },
+    resume() { if (ctx && ctx.state !== 'running') ctx.resume(); },
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  disc starts its revolution: pentatonic pluck into the dub delay (the stagger makes an arpeggio)
+    // ═══════════════════════════════════════════════════════════════════
+
+    discStart(k, n) {
+      if (!live()) return;
+      const s = S(), t = ctx.currentTime, i = Math.round((n - 1 - k) * 0.6);
+      const f = noteHz(i, 0);
+      const d = (g) => out(g, 0.5, 0.9, 0.25);
+      tone('triangle', f, t, 0.004, 0.09 * s.discs, 0.35, d);
+      tone('sine', f * 2.01, t, 0.002, 0.04 * s.discs, 0.18, d);
+      noiseHit(t, 3200, 6, 0.03 * s.discs, 0.03, (g) => out(g, 0.6, 0.3));
+    },
+    discStop(k) {
+      if (!live()) return;
+      const s = S(), t = ctx.currentTime;
+      noiseHit(t, 1400 + k * 60, 8, 0.05 * s.discs, 0.05, (g) => out(g, 0.8, 0.25));
+      tone('sine', 82.4, t, 0.003, 0.05 * s.discs, 0.12, (g) => out(g, 1));
+    },
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  continuous controls, once per frame
+    // ═══════════════════════════════════════════════════════════════════
+
+    frame(roll, wobble, wobbleSigned) {
+      if (!ready) return;
+      const s = S(), t = ctx.currentTime;
+      rollGain.gain.setTargetAtTime(Math.min(0.12, roll * 0.03) * s.discs, t, 0.08);
+      rollFilter.frequency.setTargetAtTime(260 + roll * 90, t, 0.1);
+      wobbleGain.gain.setTargetAtTime(Math.min(0.2, wobble * 0.5) * s.impacts, t, 0.03);
+      wobbleOsc.frequency.setTargetAtTime(98 * (1 + wobbleSigned * 2.5), t, 0.015);
+    },
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  ball hits the rings: glass bell + body thump + spring boing, dub throw on hard hits
+    // ═══════════════════════════════════════════════════════════════════
+
+    impact(speed, dir, k) {
+      if (!live()) return;
+      const s = S(), t = ctx.currentTime, v = Math.min(1, speed / 12);
+      const f0 = noteHz(Math.round(k * 0.5) + (dir > 0 ? 2 : 0), 1);
+      const bell = (g) => out(g, 0.6, 0.7, 0.6);
+      [[1, 1], [2.76, 0.5], [5.4, 0.28], [8.93, 0.15]].forEach(([r, a]) => tone('sine', f0 * r, t, 0.002, 0.16 * a * v * s.impacts, 1.6 / r + 0.3, bell));
+      noiseHit(t, 180, 1.2, 0.35 * v * s.impacts, 0.18, (g) => out(g, 1, 0.2), 'lowpass');
+      const boing = tone('sine', 70 + 60 * v, t, 0.005, 0.25 * v * s.impacts, 0.7, (g) => out(g, 1, 0.5));
+      boing.frequency.exponentialRampToValueAtTime(42, t + 0.6);
+      if (v > 0.35) dubThrow(v);
+    },
+    whoosh() {
+      if (!live()) return;
+      const s = S(), t = ctx.currentTime;
+      const f = noiseHit(t, 600, 1.5, 0.12 * s.impacts, 0.35, (g) => out(g, 1, 0.35));
+      f.frequency.setValueAtTime(400, t); f.frequency.exponentialRampToValueAtTime(2400, t + 0.3);
+    },
+    bounce(v) {
+      if (!live() || v < 0.8) return;
+      const s = S(), t = ctx.currentTime, a = Math.min(1, v / 8);
+      noiseHit(t, 140, 1, 0.3 * a * s.impacts, 0.12, (g) => out(g, 1, 0.15), 'lowpass');
+      tone('sine', 60, t, 0.003, 0.2 * a * s.impacts, 0.15, (g) => out(g, 1));
+    },
+    clink(j) {
+      if (!live() || j < 0.3) return;
+      const s = S(), t = ctx.currentTime, a = Math.min(1, j / 6);
+      const f = 1800 + Math.random() * 900;
+      const d = (g) => out(g, 0.7, 0.6, 0.3);
+      tone('sine', f, t, 0.001, 0.12 * a * s.impacts, 0.35, d);
+      tone('sine', f * 2.43, t, 0.001, 0.05 * a * s.impacts, 0.2, d);
+    },
+    shatter() {
+      if (!live()) return;
+      const s = S(), t = ctx.currentTime;
+      noiseHit(t, 2600, 0.8, 0.3 * s.impacts, 0.25, (g) => out(g, 1, 0.6, 0.4), 'highpass');
+      for (let i = 0; i < 14; i++) {
+        const tt = t + Math.random() * 0.22;
+        tone('sine', 2200 + Math.random() * 4200, tt, 0.001, (0.03 + Math.random() * 0.04) * s.impacts, 0.06 + Math.random() * 0.12, (g) => out(g, 0.8, 0.5, 0.3));
+      }
+      dubThrow(0.8);
+    },
+  };
+  return api;
+})();
+const unlockAudio = () => { if (P.sound.on) audio.unlock(); };
+for (const ev of ['pointerdown', 'touchstart', 'touchend', 'mousedown', 'keydown', 'click']) window.addEventListener(ev, unlockAudio, { capture: true, passive: true });
+document.addEventListener('visibilitychange', () => { if (document.hidden) audio.suspend(); else if (P.sound.on) audio.resume(); });
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  tweakpane
+// ═══════════════════════════════════════════════════════════════════
+
+const pane = new Pane({ container: document.getElementById('pane-container'), title: 'Controls', expanded: false });
+let refreshing = false;
+function refreshFolder(f) { refreshing = true; try { f.refresh(); } finally { refreshing = false; } }
+function bind(folder, obj, key, opts, onChange) {
+  return folder.addBinding(obj, key, opts).on('change', () => { if (refreshing) return; onChange && onChange(); });
+}
+const colorOpt = (extra = {}) => ({ view: 'color', picker: 'inline', expanded: false, ...extra });
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  animation
+// ═══════════════════════════════════════════════════════════════════
+
+const animFolder = pane.addFolder({ title: 'Animation', expanded: false });
+bind(animFolder, P.anim, 'play', { label: 'play' });
+bind(animFolder, P.anim, 'period', { label: 'loop (s)', min: 0.5, max: 12, step: 0.01 });
+bind(animFolder, P.anim, 'speed', { label: 'speed', min: 0, max: 3, step: 0.01 });
+const phaseBinding = bind(animFolder, P.anim, 'phase', { label: 'scrub', min: 0, max: 1, step: 0.001 }, () => { animTime = P.anim.phase * P.anim.period; });
+bind(animFolder, P.anim, 'hold', { label: 'hold (of loop)', min: 0, max: 0.8, step: 0.01 });
+bind(animFolder, P.anim, 'easeIn', { label: 'ease in', min: 1, max: 6, step: 0.05 });
+bind(animFolder, P.anim, 'easeOut', { label: 'ease out', min: 1, max: 6, step: 0.05 });
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  >0: front leads
+// ═══════════════════════════════════════════════════════════════════
+
+bind(animFolder, P.anim, 'delay', { label: 'delay per ring', min: -0.2, max: 0.2, step: 0.001 });
+bind(animFolder, P.anim, 'direction', { label: 'direction', options: { 'clockwise (from front)': -1, 'counter-clockwise': 1 } });
+const bulgeFolder = animFolder.addFolder({ title: 'Local ring bulge (at the disc)', expanded: false });
+bind(bulgeFolder, P.anim, 'bulgeMove', { label: 'bulge while moving', min: 0, max: 0.5, step: 0.001 });
+bind(bulgeFolder, P.anim, 'bulgeRest', { label: 'bulge at rest', min: 0, max: 0.3, step: 0.001 });
+bind(bulgeFolder, P.anim, 'bulgeWidth', { label: 'bulge width (°)', min: 2, max: 90, step: 0.5 });
+bind(bulgeFolder, P.anim, 'discRide', { label: 'ring presses out', min: 0, max: 2, step: 0.01 });
+bind(bulgeFolder, P.anim, 'springK', { label: 'spring stiffness', min: 0, max: 600, step: 1 });
+bind(bulgeFolder, P.anim, 'springDamp', { label: 'spring damping', min: 0, max: 60, step: 0.1 });
+const wobbleFolder = animFolder.addFolder({ title: 'Extra waves (off by default)', expanded: false });
+bind(wobbleFolder, P.anim, 'waveAmp', { label: 'spacing wave amp', min: 0, max: 0.5, step: 0.005 });
+bind(wobbleFolder, P.anim, 'waveLen', { label: 'spacing cycles', min: 0.25, max: 4, step: 0.05 });
+bind(wobbleFolder, P.anim, 'waveSpeed', { label: 'spacing speed', min: -3, max: 3, step: 0.05 });
+bind(wobbleFolder, P.anim, 'waveTaper', { label: 'spacing pin ends', min: 0, max: 1, step: 0.01 });
+bind(wobbleFolder, P.anim, 'slideAmp', { label: 'slide amp', min: 0, max: 0.4, step: 0.005 });
+bind(wobbleFolder, P.anim, 'slideLen', { label: 'slide cycles', min: 0.25, max: 4, step: 0.05 });
+bind(wobbleFolder, P.anim, 'slideSpeed', { label: 'slide speed', min: -3, max: 3, step: 0.05 });
+bind(wobbleFolder, P.anim, 'slideDir', { label: 'slide direction', min: -180, max: 180, step: 1 });
+bind(wobbleFolder, P.anim, 'slideTaper', { label: 'slide pin ends', min: 0, max: 1, step: 0.01 });
+bind(wobbleFolder, P.anim, 'slideBias', { label: 'slide front ↔ back', min: -1, max: 1, step: 0.01 });
+bind(wobbleFolder, P.anim, 'tiltFollow', { label: 'ring tilt (follows slide)', min: 0, max: 2, step: 0.01 });
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  balls
+// ═══════════════════════════════════════════════════════════════════
+
+const ballFolder = pane.addFolder({ title: 'Balls (click to throw)', expanded: false });
+bind(ballFolder, P.ball, 'radius', { min: 0.03, max: 0.6, step: 0.005 });
+bind(ballFolder, P.ball, 'speed', { label: 'throw speed', min: 3, max: 40, step: 0.1 });
+bind(ballFolder, P.ball, 'gravity', { min: 0, max: 30, step: 0.1 });
+bind(ballFolder, P.ball, 'bounce', { min: 0, max: 1, step: 0.01 });
+bind(ballFolder, P.ball, 'friction', { min: 0, max: 1, step: 0.01 });
+bind(ballFolder, P.ball, 'life', { label: 'lifetime (s)', min: 1, max: 30, step: 0.5 });
+bind(ballFolder, P.ball, 'color', colorOpt(), applyBall);
+bind(ballFolder, P.ball, 'roughness', { min: 0, max: 1, step: 0.01 }, applyBall);
+const shatterFolder = ballFolder.addFolder({ title: 'Shatter on impact (voronoi)', expanded: false });
+bind(shatterFolder, P.ball, 'shatter', { label: 'on' });
+bind(shatterFolder, P.ball, 'shatterSpeed', { label: 'min impact speed', min: 0, max: 15, step: 0.1 });
+bind(shatterFolder, P.ball, 'shatterFrames', { label: 'frames after spring-back', min: 0, max: 30, step: 1 });
+bind(shatterFolder, P.ball, 'pieces', { label: 'pieces', min: 3, max: 40, step: 1 }, () => { rebuildFractures(); for (const sh of shatters) sh.set = null; });
+bind(shatterFolder, P.ball, 'burst', { label: 'burst speed', min: 0, max: 10, step: 0.05 });
+bind(shatterFolder, P.ball, 'keep', { label: 'keep ball velocity', min: 0, max: 1, step: 0.01 });
+bind(shatterFolder, P.ball, 'spin', { label: 'piece spin', min: 0, max: 40, step: 0.5 });
+bind(shatterFolder, P.ball, 'pieceLife', { label: 'fade out (s)', min: 0.2, max: 5, step: 0.05 });
+bind(shatterFolder, P.ball, 'pieceBounce', { label: 'piece bounce', min: 0, max: 1, step: 0.01 });
+bind(shatterFolder, P.ball, 'innerColor', colorOpt({ label: 'inside colour' }), applyBall);
+const dentFolder = ballFolder.addFolder({ title: 'Impact dent', expanded: false });
+bind(dentFolder, P.ball, 'dentGain', { label: 'dent strength', min: 0, max: 0.2, step: 0.001 });
+bind(dentFolder, P.ball, 'dentMax', { label: 'max depth', min: 0.02, max: 0.8, step: 0.005 });
+bind(dentFolder, P.ball, 'dentWidth', { label: 'width around ring (°)', min: 4, max: 90, step: 0.5 });
+bind(dentFolder, P.ball, 'dentSpread', { label: 'spread along tube', min: 0.05, max: 2, step: 0.01 });
+bind(dentFolder, P.ball, 'stiffness', { label: 'spring back', min: 10, max: 800, step: 1 });
+bind(dentFolder, P.ball, 'damping', { label: 'damping (wobble)', min: 0, max: 40, step: 0.1 });
+bind(dentFolder, P.ball, 'ripple', { label: 'ripple to neighbours', min: 0, max: 1500, step: 1 });
+const pushFolder = ballFolder.addFolder({ title: 'Ring push (whole rings wobble)', expanded: false });
+bind(pushFolder, P.ball, 'pushGain', { label: 'push strength', min: 0, max: 0.08, step: 0.0005 });
+bind(pushFolder, P.ball, 'pushMax', { label: 'max offset', min: 0.01, max: 1, step: 0.005 });
+bind(pushFolder, P.ball, 'pushSpring', { label: 'spring back', min: 5, max: 600, step: 1 });
+bind(pushFolder, P.ball, 'pushDamp', { label: 'damping (wobble)', min: 0, max: 30, step: 0.1 });
+bind(pushFolder, P.ball, 'pushCouple', { label: 'drag neighbours', min: 0, max: 2000, step: 1 });
+bind(pushFolder, P.ball, 'pushTilt', { label: 'ring tilt', min: 0, max: 3, step: 0.01 });
+const discBallFolder = ballFolder.addFolder({ title: 'Ball vs. discs', expanded: false });
+bind(discBallFolder, P.ball, 'discBounce', { label: 'bounciness', min: 0, max: 1, step: 0.01 });
+bind(discBallFolder, P.ball, 'discFriction', { label: 'friction', min: 0, max: 1, step: 0.01 });
+bind(discBallFolder, P.ball, 'discKnock', { label: 'disc gets knocked', min: 0, max: 2, step: 0.01 });
+const discHitFolder = ballFolder.addFolder({ title: 'Discs knocked by the dent', expanded: false });
+bind(discHitFolder, P.ball, 'discFollow', { label: 'wall pushes disc', min: 0, max: 2, step: 0.01 });
+bind(discHitFolder, P.ball, 'discJump', { label: 'jump (speed kept)', min: 0, max: 3, step: 0.01 });
+bind(discHitFolder, P.ball, 'discSpring', { label: 'pull back to path', min: 5, max: 400, step: 1 });
+bind(discHitFolder, P.ball, 'discDamp', { label: 'damping', min: 0, max: 40, step: 0.1 });
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  tube geometry
+// ═══════════════════════════════════════════════════════════════════
+
+const tubeFolder = pane.addFolder({ title: 'Tube', expanded: false });
+bind(tubeFolder, P.tube, 'radius', { min: 0.3, max: 2, step: 0.01 }, rebuildGeometry);
+bind(tubeFolder, P.tube, 'gap', { label: 'gap between rings', min: 0, max: 0.4, step: 0.001 }, rebuildGeometry);
+bind(tubeFolder, P.tube, 'rings', { min: 2, max: MAX_RINGS, step: 1 }, rebuildGeometry);
+bind(tubeFolder, P.tube, 'ringWidth', { label: 'ring width (radial)', min: 0.01, max: 0.4, step: 0.001 }, rebuildGeometry);
+bind(tubeFolder, P.tube, 'ringThick', { label: 'ring thickness', min: 0.01, max: 0.6, step: 0.001 }, rebuildGeometry);
+bind(tubeFolder, P.tube, 'corner', { label: 'edge rounding', min: 0.02, max: 1, step: 0.01 }, rebuildGeometry);
+bind(tubeFolder, P.tube, 'segments', { min: 12, max: 256, step: 1 }, rebuildGeometry);
+bind(tubeFolder, P.tube, 'yaw', { min: -180, max: 180, step: 0.5 }, rebuildGeometry);
+bind(tubeFolder, P.tube, 'pitch', { min: -45, max: 45, step: 0.5 }, rebuildGeometry);
+bind(tubeFolder, P.tube, 'hover', { min: -0.5, max: 2, step: 0.005 }, rebuildGeometry);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  discs
+// ═══════════════════════════════════════════════════════════════════
+
+const discFolder = pane.addFolder({ title: 'Discs (one per ring)', expanded: false });
+bind(discFolder, P.discs, 'radius', { min: 0.05, max: 0.9, step: 0.005 }, rebuildGeometry);
+bind(discFolder, P.discs, 'thick', { label: 'thickness (× ring)', min: 0.1, max: 3, step: 0.01 }, rebuildGeometry);
+bind(discFolder, P.discs, 'fillet', { label: 'edge fillet', min: 0.02, max: 1, step: 0.01 }, rebuildGeometry);
+bind(discFolder, P.discs, 'inset', { label: 'gap to wall', min: -0.2, max: 0.5, step: 0.005 });
+bind(discFolder, P.discs, 'orbitScale', { label: 'orbit ×', min: 0, max: 1.2, step: 0.005 });
+bind(discFolder, P.discs, 'angle', { label: 'rest angle', min: 0, max: 360, step: 1 });
+bind(discFolder, P.discs, 'twist', { label: 'twist per ring', min: -45, max: 45, step: 0.5 });
+bind(discFolder, P.discs, 'jitter', { label: 'angle jitter', min: 0, max: 60, step: 0.5 });
+bind(discFolder, P.discs, 'seed', { min: 0, max: 100, step: 1 }, recomputeJitter);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  glass
+// ═══════════════════════════════════════════════════════════════════
+
+const glassFolder = pane.addFolder({ title: 'Ring material (smoky glass)', expanded: false });
+bind(glassFolder, P.glass, 'color', colorOpt({ label: 'tint' }), applyGlass);
+bind(glassFolder, P.glass, 'roughness', { min: 0, max: 1, step: 0.005 }, applyGlass);
+bind(glassFolder, P.glass, 'transmission', { min: 0, max: 1, step: 0.005 }, applyGlass);
+bind(glassFolder, P.glass, 'thickness', { label: 'thickness (refraction)', min: 0, max: 3, step: 0.005 }, applyGlass);
+bind(glassFolder, P.glass, 'ior', { min: 1, max: 2.333, step: 0.001 }, applyGlass);
+bind(glassFolder, P.glass, 'attenuationColor', colorOpt({ label: 'attenuation colour' }), applyGlass);
+bind(glassFolder, P.glass, 'attenuationDistance', { label: 'attenuation dist.', min: 0, max: 3, step: 0.01 }, applyGlass);
+bind(glassFolder, P.glass, 'dispersion', { label: 'dispersion (rainbow)', min: 0, max: 40, step: 0.1 }, applyGlass);
+const iridFolder = glassFolder.addFolder({ title: 'Iridescence (thin film)', expanded: false });
+bind(iridFolder, P.glass, 'iridescence', { label: 'amount', min: 0, max: 1, step: 0.01 }, applyGlass);
+bind(iridFolder, P.glass, 'iridescenceIOR', { label: 'film IOR', min: 1, max: 2.333, step: 0.01 }, applyGlass);
+bind(iridFolder, P.glass, 'iridMin', { label: 'film thickness min (nm)', min: 0, max: 1200, step: 5 }, applyGlass);
+bind(iridFolder, P.glass, 'iridMax', { label: 'film thickness max (nm)', min: 0, max: 1200, step: 5 }, applyGlass);
+bind(iridFolder, P.glass, 'iridBands', { label: 'bands around ring', min: 0, max: 12, step: 1 }, applyGlass);
+bind(iridFolder, P.glass, 'iridFlow', { label: 'band drift speed', min: -2, max: 2, step: 0.01 }, applyGlass);
+bind(glassFolder, P.glass, 'specularIntensity', { label: 'specular', min: 0, max: 2, step: 0.01 }, applyGlass);
+bind(glassFolder, P.glass, 'envIntensity', { label: 'env intensity', min: 0, max: 4, step: 0.01 }, applyGlass);
+bind(glassFolder, P.glass, 'clearcoat', { min: 0, max: 1, step: 0.005 }, applyGlass);
+bind(glassFolder, P.glass, 'clearcoatRoughness', { label: 'clearcoat rough.', min: 0, max: 1, step: 0.005 }, applyGlass);
+bind(glassFolder, P.glass, 'metalness', { min: 0, max: 1, step: 0.005 }, applyGlass);
+bind(glassFolder, P.glass, 'castShadow', { label: 'rings cast shadow' }, applyGlass);
+bind(glassFolder, P.glass, 'liner', { label: 'dark inner liner' }, applyGlass);
+bind(glassFolder, P.glass, 'linerColor', colorOpt({ label: 'liner colour' }), applyGlass);
+bind(glassFolder, P.glass, 'linerRoughness', { label: 'liner roughness', min: 0, max: 1, step: 0.005 }, applyGlass);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  disc material
+// ═══════════════════════════════════════════════════════════════════
+
+const discMatFolder = pane.addFolder({ title: 'Disc material (bronze)', expanded: false });
+bind(discMatFolder, P.discMat, 'color', colorOpt(), applyDiscMat);
+bind(discMatFolder, P.discMat, 'roughness', { min: 0, max: 1, step: 0.005 }, applyDiscMat);
+bind(discMatFolder, P.discMat, 'metalness', { min: 0, max: 1, step: 0.005 }, applyDiscMat);
+bind(discMatFolder, P.discMat, 'envIntensity', { label: 'env intensity', min: 0, max: 4, step: 0.01 }, applyDiscMat);
+bind(discMatFolder, P.discMat, 'anisotropy', { label: 'turned-metal streak', min: 0, max: 1, step: 0.01 }, applyDiscMat);
+bind(discMatFolder, P.discMat, 'anisoRot', { label: 'streak direction', min: 0, max: 180, step: 1 }, applyDiscMat);
+bind(discMatFolder, P.discMat, 'grooveFreq', { label: 'groove count', min: 0, max: 120, step: 1 }, applyDiscMat);
+bind(discMatFolder, P.discMat, 'grooveAmp', { label: 'groove darkening', min: 0, max: 0.6, step: 0.005 }, applyDiscMat);
+bind(discMatFolder, P.discMat, 'grooveRough', { label: 'groove roughness', min: 0, max: 0.5, step: 0.005 }, applyDiscMat);
+bind(discMatFolder, P.discMat, 'edgeStart', { label: 'rim start', min: 0, max: 1, step: 0.005 }, applyDiscMat);
+bind(discMatFolder, P.discMat, 'edgeDark', { label: 'face rim darkening', min: 0, max: 1, step: 0.005 }, applyDiscMat);
+bind(discMatFolder, P.discMat, 'rimColor', colorOpt({ label: 'bevel colour' }), applyDiscMat);
+bind(discMatFolder, P.discMat, 'rimRough', { label: 'bevel roughness', min: 0, max: 1, step: 0.005 }, applyDiscMat);
+bind(discMatFolder, P.discMat, 'rimSharp', { label: 'bevel ↔ face blend', min: 0, max: 0.99, step: 0.005 }, applyDiscMat);
+bind(discMatFolder, P.discMat, 'sideColor', colorOpt({ label: 'side colour' }), applyDiscMat);
+bind(discMatFolder, P.discMat, 'sideRough', { label: 'side roughness', min: 0, max: 1, step: 0.005 }, applyDiscMat);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  environment
+// ═══════════════════════════════════════════════════════════════════
+
+const envFolder = pane.addFolder({ title: 'Environment (studio HDRI)', expanded: false });
+const markEnv = () => { envDirty = true; };
+bind(envFolder, P.env, 'intensity', { min: 0, max: 4, step: 0.01 }, applyEnv);
+bind(envFolder, P.env, 'rotation', { min: -180, max: 180, step: 1 }, applyEnv);
+bind(envFolder, P.env, 'blur', { min: 0, max: 0.3, step: 0.005 }, markEnv);
+bind(envFolder, P.env, 'roomTop', colorOpt({ label: 'ceiling' }), markEnv);
+bind(envFolder, P.env, 'roomHorizon', colorOpt({ label: 'horizon' }), markEnv);
+bind(envFolder, P.env, 'roomFloor', colorOpt({ label: 'floor' }), markEnv);
+bind(envFolder, P.env, 'horizonSoft', { label: 'horizon softness', min: 0.001, max: 1, step: 0.005 }, markEnv);
+for (const [name, title] of [['key', 'Top strip (edge highlights)'], ['fill', 'Tall soft panel (front right)'], ['rim', 'Rim strip (back left)'], ['flag', 'Black flag (dark reflections)']]) {
+  const f = envFolder.addFolder({ title, expanded: false });
+  bind(f, P.env[name], 'on', {}, markEnv);
+  bind(f, P.env[name], 'color', colorOpt(), markEnv);
+  bind(f, P.env[name], 'intensity', { min: 0, max: 20, step: 0.05 }, markEnv);
+  bind(f, P.env[name], 'az', { label: 'azimuth', min: -180, max: 180, step: 1 }, markEnv);
+  bind(f, P.env[name], 'el', { label: 'elevation', min: -80, max: 89, step: 1 }, markEnv);
+  bind(f, P.env[name], 'w', { label: 'width', min: 0.2, max: 20, step: 0.1 }, markEnv);
+  bind(f, P.env[name], 'h', { label: 'height', min: 0.2, max: 20, step: 0.1 }, markEnv);
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  key light + shadow
+// ═══════════════════════════════════════════════════════════════════
+
+const lightFolder = pane.addFolder({ title: 'Key light & shadow', expanded: false });
+bind(lightFolder, P.light, 'color', colorOpt(), applyLight);
+bind(lightFolder, P.light, 'intensity', { min: 0, max: 10, step: 0.05 }, applyLight);
+bind(lightFolder, P.light, 'az', { label: 'azimuth', min: -180, max: 180, step: 1 }, applyLight);
+bind(lightFolder, P.light, 'el', { label: 'elevation', min: 5, max: 89, step: 1 }, applyLight);
+const softFolder = lightFolder.addFolder({ title: 'Soft area shadow (floor)', expanded: false });
+bind(softFolder, P.light, 'softSize', { label: 'light size (°)', min: 0.5, max: 90, step: 0.5 }, applyLight);
+bind(softFolder, P.light, 'softStrength', { label: 'area shadow', min: 0, max: 1, step: 0.01 }, applyLight);
+bind(softFolder, P.light, 'aoStrength', { label: 'contact darkness', min: 0, max: 1, step: 0.01 }, applyLight);
+bind(softFolder, P.light, 'aoRadius', { label: 'contact spread', min: 0.01, max: 2, step: 0.01 }, applyLight);
+bind(softFolder, P.light, 'mapStrength', { label: 'shadow-map detail', min: 0, max: 1, step: 0.01 }, applyLight);
+bind(softFolder, P.light, 'shadowTint', colorOpt({ label: 'shadow colour' }), applyLight);
+bind(lightFolder, P.light, 'shadows', { label: 'shadow map' }, applyLight);
+bind(lightFolder, P.light, 'type', { options: { VSM: 'VSM', PCF: 'PCF', Basic: 'Basic' } }, applyLight);
+bind(lightFolder, P.light, 'radius', { label: 'blur radius', min: 0, max: 40, step: 0.5 }, applyLight);
+bind(lightFolder, P.light, 'blurSamples', { label: 'VSM samples', min: 2, max: 32, step: 1 }, applyLight);
+bind(lightFolder, P.light, 'bias', { min: -0.01, max: 0.01, step: 0.0001 }, applyLight);
+bind(lightFolder, P.light, 'normalBias', { label: 'normal bias', min: 0, max: 0.2, step: 0.001 }, applyLight);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  floor / background
+// ═══════════════════════════════════════════════════════════════════
+
+const floorFolder = pane.addFolder({ title: 'Floor & background', expanded: false });
+bind(floorFolder, P.floor, 'centerColor', colorOpt({ label: 'centre' }), applyFloor);
+bind(floorFolder, P.floor, 'edgeColor', colorOpt({ label: 'edge' }), applyFloor);
+bind(floorFolder, P.floor, 'radius', { label: 'gradient radius', min: 1, max: 40, step: 0.1 }, applyFloor);
+bind(floorFolder, P.floor, 'power', { label: 'gradient curve', min: 0.2, max: 4, step: 0.01 }, applyFloor);
+bind(floorFolder, P.floor, 'center', { label: 'centre offset', x: { min: -10, max: 10, step: 0.1 }, y: { min: -10, max: 10, step: 0.1 } }, applyFloor);
+bind(floorFolder, P.floor, 'shadowStrength', { label: 'shadow strength', min: 0, max: 1, step: 0.01 }, applyFloor);
+bind(floorFolder, P.floor, 'soft', { label: 'floor gives way', min: 0, max: 1.5, step: 0.01 }, applyFloor);
+bind(floorFolder, P.floor, 'dentSpread', { label: 'dent spread', min: 0, max: 1.5, step: 0.005 });
+bind(floorFolder, P.floor, 'dentMargin', { label: 'dent clearance', min: 0, max: 0.1, step: 0.001 });
+bind(floorFolder, P.floor, 'dentShade', { label: 'dent shading', min: 0, max: 1, step: 0.01 }, applyFloor);
+bind(floorFolder, P.floor, 'background', colorOpt({ label: 'horizon / fog' }), applyBackground);
+bind(floorFolder, P.floor, 'fog', {}, applyBackground);
+bind(floorFolder, P.floor, 'fogNear', { label: 'fog near', min: 0, max: 60, step: 0.5 }, applyBackground);
+bind(floorFolder, P.floor, 'fogFar', { label: 'fog far', min: 1, max: 120, step: 0.5 }, applyBackground);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  camera
+// ═══════════════════════════════════════════════════════════════════
+
+const camFolder = pane.addFolder({ title: 'Camera', expanded: false });
+bind(camFolder, P.camera, 'fov', { min: 10, max: 90, step: 0.5 }, applyCamera);
+bind(camFolder, P.camera, 'az', { label: 'azimuth', min: -180, max: 180, step: 0.5 }, applyCamera);
+bind(camFolder, P.camera, 'el', { label: 'elevation', min: 2, max: 89, step: 0.5 }, applyCamera);
+bind(camFolder, P.camera, 'dist', { label: 'distance', min: 2, max: 40, step: 0.05 }, applyCamera);
+bind(camFolder, P.camera, 'targetY', { label: 'target height', min: -3, max: 3, step: 0.01 }, applyCamera);
+bind(camFolder, P.camera, 'orbit', { label: 'orbit controls' }, applyCamera);
+camFolder.addButton({ title: 'Reset camera' }).on('click', () => { Object.assign(P.camera, structuredClone(DEFAULTS.camera)); refreshFolder(camFolder); applyCamera(); });
+
+function applyAll() {
+  audio.apply();
+  applyBall();
+  rebuildGeometry();
+  recomputeJitter();
+  applyGlass();
+  applyDiscMat();
+  applyFloor();
+  applyLight();
+  applyEnv();
+  applyBackground();
+  resize();
+  applyCamera();
+  envDirty = true;
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  keyboard
+// ═══════════════════════════════════════════════════════════════════
+
+window.addEventListener('keydown', (e) => {
+  if (e.target && e.target.tagName === 'INPUT') return;
+  if (e.code === 'Space') { e.preventDefault(); P.anim.play = !P.anim.play; refreshFolder(animFolder); }
+  if (e.key === 'h' || e.key === 'H') pane.hidden = !pane.hidden;
+});
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  go
+// ═══════════════════════════════════════════════════════════════════
+
+applyAll();
+
+
+if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) { P.anim.play = false; refreshFolder(animFolder); }
+
+let animTime = 0;
+let frameDt = 0;
+let last = performance.now();
+let paneLast = performance.now(), firstFrame = true;
+
+renderer.setAnimationLoop(() => {
+  const now = performance.now();
+  const dt = Math.min(0.1, (now - last) / 1000);
+  last = now;
+  if (P.anim.play) animTime += dt * P.anim.speed;
+  const period = Math.max(0.05, P.anim.period);
+  P.anim.phase = frac(animTime / period);
+
+  uTime.value = animTime;
+  if (envDirty) regenEnv();
+  frameDt = dt;
+  updateBalls(dt);
+  updateShatters(dt);
+  updateInstances(animTime, P.anim.play ? dt * P.anim.speed : 0);
+  if (P.camera.orbit) controls.update();
+  renderer.render(scene, camera);
+
+  if (firstFrame) { firstFrame = false; document.getElementById('loader').classList.add('hidden'); }
+  if (now - paneLast > 500) {
+    paneLast = now;
+    if (P.anim.play) refreshFolder(phaseBinding);
+  }
+});
+</script>
+</body>
+</html>
