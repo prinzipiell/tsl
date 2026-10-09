@@ -1,0 +1,1050 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Twisted Slices</title>
+<link rel="stylesheet" href="styles/style.css"/>
+<script type="importmap">{
+ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.webgpu.js",
+  "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.webgpu.js",
+  "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.tsl.js",
+  "tweakpane": "https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.min.js"
+ }
+}</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="pane-container"></div>
+<div id="vignette"></div>
+<div id="title-block">
+  <span id="title-eyebrow">Tinker Day #48</span>
+  <span id="title-headline">Twisted Slices</span>
+  <p style="font-size: 14px;">
+    A glass octahedron twists,<br>gets sliced and heals again<br>
+    Mousedown & Move to rotate<br><br>
+    Open controls to adjust almost<br>everything!<br><br>
+    <span style="font-size: 12px;">WebGPU · three.js · TSL</span><br />
+  </p>
+</div>
+<footer><a id="nav-prev-all" href="https://dasprinzip.com/tinker/index.html">&#8593; Checkout all days</a><a id="nav-prev" href="https://dasprinzip.com/tinker/day47/"><br>&larr; The Day Before.</a></footer>
+<div id="loader"><div class="spinner"></div><div class="loading-text">loading<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></div></div>
+<script>
+  const __fail = (msg) => {
+    const l = document.getElementById('loader');
+    if (!l) return;
+    l.classList.remove('hidden');
+    const sp = l.querySelector('.spinner'); if (sp) sp.style.display = 'none';
+    const t = l.querySelector('.loading-text');
+    if (t) t.textContent = 'error — ' + msg;
+  };
+  window.addEventListener('error', e => __fail(e.message || 'script error'));
+  window.addEventListener('unhandledrejection', e =>
+    __fail(e.reason && e.reason.message ? e.reason.message : String(e.reason)));
+</script>
+<script type="module">
+import { Pane } from 'tweakpane';
+import * as THREE from 'three/webgpu';
+import {
+	Fn, If, Loop, Break, select, float, int, vec2, vec3, vec4, uniform,
+	Continue, abs, max, min, dot, cross, normalize, length, cos, sin, clamp, step, mix, sign,
+	screenUV, positionGeometry, texture, fract, floor, pow, exp, log, sqrt, atan, smoothstep, reflect, refract
+} from 'three/tsl';
+
+// ---------------------------------------------------------------- parameters
+// Live-tweakable values (GLSL #defines). Everything that only depends on time,
+// mouse or these values is computed on the CPU once per frame.
+export const P = {
+	BODY_SHAPE: 1, OCTA_SIZE: 3.3, OCTA_ROUND: 0.55, STAR_SIZE: 0.65, BEND: 0.2,
+	SLICE_CUT: 1.2, SLICE_CLOSE: 1.4, SLICE_HOLD: 3.0, SLICE_REST: 5.0, SLICE_RANDOM: true,
+	SLICE_MIN_ANGLE: 0.15, SLICE_MAX_ANGLE: 0.8, SLICE_AMOUNT: 1.0, SLICE_HEAL: 0.3, INNER_FACETS: 0.25,
+	MARCH_STEPS: 80, MARCH_STEPS_2ND: 80, MARCH_STEP: 0.7, HIT_OUT: 0.0008,
+	AO_STRENGTH: 1.0, AO_RADIUS: 0.6, NORMAL_EPS: 0.1,
+	CAM_POS: [ 0, 3.4, 8.8 ], CAM_FOCAL: 1.73,
+};
+const BODY_R = 4.02, SLICE_STEP = 0.15, EPSILON = 0.0001, PI = Math.PI;
+
+// ---------------------------------------------------------------- uniforms
+export const U = {
+	time: uniform( 0 ), res: uniform( new THREE.Vector2( 1, 1 ) ),
+	cam: uniform( new THREE.Vector3() ), cu: uniform( new THREE.Vector3() ),
+	cv: uniform( new THREE.Vector3() ), cw: uniform( new THREE.Vector3() ), focal: uniform( P.CAM_FOCAL ),
+	n: [ 0, 1, 2 ].map( () => uniform( new THREE.Vector3( 0, 1, 0 ) ) ),
+	ang: [ 0, 1, 2 ].map( () => uniform( new THREE.Vector2() ) ),
+	curve: uniform( new THREE.Vector3() ), faceK: uniform( new THREE.Vector3( 1, 1, 1 ) ),
+	shape: uniform( P.BODY_SHAPE ), octaSize: uniform( P.OCTA_SIZE ), octaRound: uniform( P.OCTA_ROUND ),
+	starSize: uniform( P.STAR_SIZE ), bend: uniform( P.BEND ),
+	heal: uniform( P.SLICE_HEAL ), inner: uniform( P.INNER_FACETS ), amount: uniform( P.SLICE_AMOUNT ),
+	marchSteps: uniform( P.MARCH_STEPS, 'int' ), marchSteps2: uniform( P.MARCH_STEPS, 'int' ), marchStep: uniform( P.MARCH_STEP ), hitOut: uniform( P.HIT_OUT ),
+	aoStrength: uniform( P.AO_STRENGTH ), aoRadius: uniform( P.AO_RADIUS ), normalEps: uniform( P.NORMAL_EPS ),
+};
+
+// ---------------------------------------------------------------- CPU side: slice animation + camera
+const f32 = Math.fround, jfract = ( x ) => x - Math.floor( x );
+function hash33cpu( x, y, z ) {
+	let a = jfract( f32( x * f32( .1031 ) ) ), b = jfract( f32( y * f32( .1030 ) ) ), c = jfract( f32( z * f32( .0973 ) ) );
+	const dt = f32( a * f32( b + 33.33 ) + b * f32( a + 33.33 ) + c * f32( c + 33.33 ) );
+	a = f32( a + dt ); b = f32( b + dt ); c = f32( c + dt );
+	return [ jfract( f32( ( a + b ) * c ) ), jfract( f32( ( a + a ) * b ) ), jfract( f32( ( b + a ) * a ) ) ];
+}
+const ease = ( x ) => { x = Math.min( Math.max( x, 0 ), 1 ); return x * x * x * ( x * ( x * 6 - 15 ) + 10 ); };
+const sstep = ( a, b, x ) => { const t = Math.min( Math.max( ( x - a ) / ( b - a ), 0 ), 1 ); return t * t * ( 3 - 2 * t ); };
+const FIXED_N = [ [ 1, 1, 1 ], [ - .5, .2, .6 ], [ .5, - .2, .6 ] ], FIXED_A = [ [ .6, .2 ], [ .2, .7 ], [ .7, .5 ] ];
+
+export function sliceAnim( t ) {
+	const cyc = 3 * P.SLICE_CUT + P.SLICE_HOLD + 3 * P.SLICE_CLOSE + P.SLICE_REST;
+	const k = Math.floor( t / cyc ), tt = t - k * cyc, tc = 3 * P.SLICE_CUT + P.SLICE_HOLD;
+	const curve = [], faceK = [];
+	for ( let i = 0; i < 3; i ++ ) {
+		const open = ease( ( tt - i * P.SLICE_CUT ) / P.SLICE_CUT );
+		const close = ease( ( tt - tc - ( 2 - i ) * P.SLICE_CLOSE ) / P.SLICE_CLOSE );
+		const cv = open * ( 1 - close ) * P.SLICE_AMOUNT;
+		curve[ i ] = cv;
+		const heal = 1 - sstep( 0, P.SLICE_HEAL, cv / Math.max( P.SLICE_AMOUNT, 1e-3 ) );
+		faceK[ i ] = 1 / Math.max( 1 - heal, 1e-3 );
+		let n, a;
+		if ( P.SLICE_RANDOM ) {
+			const hn = hash33cpu( k + .5, i + .5, 7.5 ), ha = hash33cpu( k + .5, i + .5, 19.5 );
+			n = [ hn[ 0 ] * 2 - 1, hn[ 1 ] * 2 - 1 + 1e-3, hn[ 2 ] * 2 - 1 ];
+			a = [ 0, 1 ].map( j => ( P.SLICE_MIN_ANGLE + ( P.SLICE_MAX_ANGLE - P.SLICE_MIN_ANGLE ) * ha[ j ] ) * cv );
+		} else {
+			n = FIXED_N[ i ]; a = FIXED_A[ i ].map( v => v * cv );
+		}
+		U.n[ i ].value.set( ...n ).normalize();
+		U.ang[ i ].value.set( a[ 0 ], a[ 1 ] );
+	}
+	U.curve.value.set( ...curve ); U.faceK.value.set( ...faceK );
+}
+
+// mouse: Shadertoy convention, pixels with bottom-left origin, (0,0) = default view
+export function setupCamera( mouse, res ) {
+	const C = new THREE.Vector3( ...P.CAM_POS ), p = C.clone();
+	if ( mouse.x > 0 || mouse.y > 0 ) {
+		const dist = C.length();
+		const az = Math.atan2( C.x, C.z ) + ( mouse.x / res.x - .5 ) * 6.2831853;
+		const el = Math.min( Math.max( Math.asin( C.y / dist ) + ( mouse.y / res.y - .5 ) * 3.1415927, - 1.45 ), 1.45 );
+		p.set( Math.cos( el ) * Math.sin( az ), Math.sin( el ), Math.cos( el ) * Math.cos( az ) ).multiplyScalar( dist );
+	}
+	const w = p.clone().negate().normalize();
+	const u = new THREE.Vector3( 0, 1, 0 ).cross( w ).normalize();
+	U.cam.value.copy( p ); U.cw.value.copy( w ); U.cu.value.copy( u ); U.cv.value.copy( w.clone().cross( u ) );
+	U.focal.value = P.CAM_FOCAL;
+}
+
+// ---------------------------------------------------------------- shading parameters (glass, studio, extras)
+export const TINTS = {
+	'blood orange': { GLASS_COL: [ .85, .22, .06 ], ABSORB: [ .06, .55, 1.10 ], FIRST_ABS: [ .20, 1.40, 2.40 ], SKY_HUE: .03 },
+	'lime green': { GLASS_COL: [ .42, .95, .08 ], ABSORB: [ .85, .05, 1.30 ], FIRST_ABS: [ 2.00, .15, 2.60 ], SKY_HUE: .24 },
+};
+export const Q = {
+	CA_SPREAD: .15, CA_LENS: 4, CA_CENTER: .55, ETA: 1.08, R0: 0,
+	PART_CELL: 1.1, PART_DENSITY: .55, PART_SIZE: .008, PART_SPEED: 1, PART_GAIN: .45, PART_COL: [ .55, .72, 1 ], PART_STEPS: 48,
+	GRAIN: 1, REFLECTIONS: 3, REFRACTIONS: 6,
+	...TINTS[ 'blood orange' ], GLASS_DIFF: .5,
+	SKY_SAT: .86, ROOM_HUE: .62, ROOM_SAT: .75, ROOM_BRIGHT: .55, SKY_SCALE: 1.5,
+	SOFTBOX_PANELS: [ 3, 4 ], SOFTBOX_FRAME: .16, SOFTBOX_SHADOW: .3, SOFTBOX_HOT: .65, SOFTBOX_VARY: .35, SOFTBOX_EDGE: 2, SOFTBOX_RIM: .75,
+	LIGHT_R: 15, LIGHT_Y: - 1.5, LIGHT_SIZE: 22, LIGHT_GAIN: 1.1, LIGHT_DRIFT: .25, LIGHT_FLICKER: .8, LIGHT_SAMPLES: 12,
+	LIGHT_CORE: .004, LIGHT_SCALE: .004, LIGHT_SOFT: .06, LIGHT_BARS: [ 3, 2, 1, 2 ], LIGHT_COVER: .8,
+	CORNER_DARK: .45, CORNER_POWER: 1, LIGHT_ANIM_SPEED: 1, LIGHT_PULSE: .8, LIGHT_HAZE: .3,
+};
+const INT_KEYS = new Set( [ 'PART_STEPS', 'REFLECTIONS', 'REFRACTIONS', 'LIGHT_SAMPLES' ] );
+export const G = {};
+for ( const k in Q ) {
+	const v = Q[ k ];
+	G[ k ] = Array.isArray( v )
+		? uniform( v.length === 2 ? new THREE.Vector2( ...v ) : v.length === 3 ? new THREE.Vector3( ...v ) : new THREE.Vector4( ...v ) )
+		: INT_KEYS.has( k ) ? uniform( v, 'int' ) : uniform( v );
+}
+export function setQ( k, v ) {
+	Q[ k ] = v;
+	if ( Array.isArray( v ) ) G[ k ].value.set( ...v ); else G[ k ].value = v;
+}
+U.frameMod = uniform( 0 ); // iFrame % 1000
+U.outRes = uniform( new THREE.Vector2( 1, 1 ) ); // canvas resolution (post pass)
+U.upscale = uniform( 0 ); // 0 = bilinear, 1 = Catmull-Rom
+U.sharpen = uniform( 0 );
+U.refineDepth = uniform( 0.3 ); // world units
+U.refineLuma = uniform( 0.12 );
+U.refineShow = uniform( 0 );
+
+// All TSL node code lives in this factory: three r186 caches layout functions per backend,
+// including their uniform names, so sharing Fn objects between materials breaks the
+// second material. Each material gets fresh Fn objects instead.
+export function buildShaders( R = U.res ) { // R: resolution this tracer renders at
+
+// ---------------------------------------------------------------- SDF helpers (inlined, small)
+const rot2 = ( v, a ) => v.mul( cos( a ) ).add( vec2( v.y, v.x.negate() ).mul( sin( a ) ) );
+
+const fbox = ( p, s ) => {
+	const d = abs( p ).sub( s ).toVar();
+	const m = max( d.x, max( d.y, d.z ) );
+	return mix( m, length( max( d, 0 ) ), step( 0, m ) );
+};
+
+const zag = ( p0, s ) => {
+	const p = abs( p0 ).sub( s ).toVar();
+	If( p.x.lessThan( p.z ), () => { p.assign( p.zyx ); } );
+	If( p.y.lessThan( p.z ), () => { p.assign( p.xzy ); } );
+	If( p.x.lessThan( p.y ), () => { p.assign( p.yxz ); } );
+	return dot( p, normalize( vec3( s.mul( .42 ), s, 0 ) ) );
+};
+
+const fOcta = ( p0, s ) => {
+	const p = abs( p0 ).toVar();
+	const m = p.x.add( p.y ).add( p.z ).sub( s ).toVar();
+	const q = vec3( 0 ).toVar(), res = m.mul( 0.57735027 ).toVar(), hit = float( 1 ).toVar();
+	If( p.x.mul( 3 ).lessThan( m ), () => { q.assign( p ); } )
+		.ElseIf( p.y.mul( 3 ).lessThan( m ), () => { q.assign( p.yzx ); } )
+		.ElseIf( p.z.mul( 3 ).lessThan( m ), () => { q.assign( p.zxy ); } )
+		.Else( () => { hit.assign( 0 ); } );
+	If( hit.greaterThan( .5 ), () => {
+		const k = clamp( q.z.sub( q.y ).add( s ).mul( .5 ), 0, s );
+		res.assign( length( vec3( q.x, q.y.sub( s ).add( k ), q.z.sub( k ) ) ) );
+	} );
+	return res;
+};
+
+const fstar = ( p0 ) => {
+	const t = U.time;
+	const yz = rot2( p0.yz, t.mul( .5 ) );
+	const p1 = vec3( p0.x, yz.x, yz.y ).toVar();
+	const xz = rot2( p1.xz, t.mul( .5 ).add( p1.x.mul( sin( t.mul( PI ) ) ).mul( U.bend ) ) );
+	const p2 = vec3( xz.x, p1.y, xz.y ).toVar();
+	const xy = rot2( p2.xy, p2.z.mul( cos( t.mul( PI * .5 ) ) ).mul( U.bend ).mul( .5 ) );
+	return zag( vec3( xy.x, xy.y, p2.z ), U.starSize );
+};
+
+const fblob = ( p0 ) => {
+	const dt = U.time.mul( .25 );
+	const tw = dt.mul( 2 ).add( p0.y.mul( float( - .1 ).add( cos( dt.mul( PI ) ).mul( .5 ).add( .5 ).mul( .5 ) ) ) );
+	const xz = rot2( p0.xz, tw );
+	const p = vec3( xz.x, p0.y, xz.y ).toVar();
+	const d = float( 0 ).toVar();
+	If( U.shape.greaterThan( .5 ), () => { d.assign( fOcta( p, U.octaSize ).sub( U.octaRound ) ); } )
+		.Else( () => { d.assign( fbox( p, vec3( 1.88 ) ).sub( .75 ) ); } );
+	If( length( p ).sub( U.starSize.mul( 3.6 ) ).lessThan( d.negate() ), () => { d.assign( max( d, fstar( p ).negate() ) ); } );
+	return d;
+};
+
+const erot = ( p, ax, ro ) => mix( ax.mul( dot( ax, p ) ), p, cos( ro ) ).add( cross( ax, p ).mul( sin( ro ) ) );
+
+// one cut level; p/m/face/near are vars mutated in place (GLSL slice())
+const sliceLevel = ( L, p, m, face, near, flip ) => {
+	const ab = U.ang[ L ], n = U.n[ L ], fk = U.faceK[ 'xyz'[ L ] ];
+	If( ab.x.notEqual( 0 ).or( ab.y.notEqual( 0 ) ), () => {
+		const cp = dot( p, n ).toVar();
+		const sBase = select( cp.greaterThan( 0 ), float( 1 ), float( - 1 ) );
+		const s = select( flip.equal( L ), sBase.negate(), sBase );
+		p.assign( erot( p, n, select( s.greaterThan( 0 ), ab.x, ab.y.negate() ) ) );
+		const ac = abs( cp ).toVar();
+		face.assign( max( face, ac.negate().mul( fk ) ) );
+		If( ac.lessThan( m.x ), () => { m.assign( vec2( ac, m.x ) ); near.assign( L ); } )
+			.Else( () => { m.assign( vec2( m.x, min( m.y, ac ) ) ); } );
+	} );
+};
+
+// ---------------------------------------------------------------- fsliced: the ONLY body evaluation in the shader
+// q = 0: distance (GLSL fsliced). q = 1: healing weight (GLSL healing, sign check done by caller).
+// Both run slicedBody up to twice; one loop keeps fblob textually single.
+const fsliced = Fn( ( [ p, q ] ) => {
+	const a = float( 0 ).toVar(), d = float( 0 ).toVar(), mx = float( 1e5 ).toVar(), my = float( 1e5 ).toVar();
+	const near = float( - 1 ).toVar(), ok = float( 0 ).toVar();
+	Loop( { start: int( 0 ), end: int( 2 ), type: 'int', condition: '<' }, ( { i } ) => {
+		If( i.equal( 1 ), () => {
+			const go = select( q.greaterThan( .5 ), ok, select( a.greaterThan( mx ), float( 1 ), float( 0 ) ) );
+			If( go.lessThan( .5 ), () => { Break(); } );
+		} );
+		const flip = select( i.equal( 0 ), float( - 1 ), near ).toVar();
+		const pk = p.toVar(), mk = vec2( 1e5 ).toVar(), fk = float( - 1e5 ).toVar(), nk = float( - 1 ).toVar();
+		sliceLevel( 2, pk, mk, fk, nk, flip );
+		sliceLevel( 1, pk, mk, fk, nk, flip );
+		sliceLevel( 0, pk, mk, fk, nk, flip );
+		const v = fblob( pk );
+		If( i.equal( 0 ), () => {
+			a.assign( v ); mx.assign( mk.x ); my.assign( mk.y ); near.assign( nk ); d.assign( max( v, fk ) );
+			ok.assign( select( nk.greaterThanEqual( 0 ).and( mk.x.lessThanEqual( .05 ) ).and( v.lessThanEqual( 0 ) ), float( 1 ), float( 0 ) ) );
+		} ).Else( () => {
+			d.assign( min( d, max( v, mx ) ) );
+			ok.assign( select( v.lessThanEqual( 0 ), ok, float( 0 ) ) );
+		} );
+	} );
+	const cv = select( near.lessThan( .5 ), U.curve.x, select( near.lessThan( 1.5 ), U.curve.y, U.curve.z ) );
+	const heal = max( float( 1 ).sub( cv.div( max( U.amount, 1e-3 ) ).smoothstep( 0, U.heal ) ), float( 1 ).sub( U.inner ) );
+	const dist = min( d, max( my, length( p ).sub( BODY_R ) ).add( SLICE_STEP ) );
+	return select( q.greaterThan( .5 ), select( ok.greaterThan( .5 ), heal, float( 0 ) ), dist );
+} ).setLayout( { name: 'fsliced', type: 'float', inputs: [ { name: 'p', type: 'vec3' }, { name: 'q', type: 'float' } ] } );
+
+// ---------------------------------------------------------------- tracing
+const boxIsect = ( p, d ) => {
+	const bl = vec3( - 4.1 ), bh = vec3( 4.1 );
+	const ol = bl.sub( p ).div( d ), oh = bh.sub( p ).div( d );
+	const l = min( ol, oh ), h = max( ol, oh );
+	const ff = min( h.x, min( h.y, h.z ) ), fn = max( max( l.x, 0 ), max( l.y, l.z ) );
+	const u = step( 3, dot( step( bl, p ), step( p, bh ) ) );
+	return vec2( float( EPSILON ).mul( u.mul( - 2 ).add( 1 ) ).mul( step( fn, ff ) ), mix( fn, ff, u ) );
+};
+
+const rm = Fn( ( [ p0, d0, steps ] ) => {
+	const res = vec2( 0 ).toVar();
+	const h = boxIsect( p0, d0 ).toVar();
+	If( h.x.notEqual( 0 ), () => {
+		const p = p0.toVar(), d = d0.toVar();
+		If( h.x.greaterThan( 0 ), () => { p.addAssign( d.mul( h.y ) ); } );
+		h.assign( vec2( sign( fsliced( p, 0 ) ), h.y ) );
+		d.mulAssign( h.x );
+		const r = float( 0 ).toVar(), l = float( 0 ).toVar(), it = float( 0 ).toVar();
+		Loop( { start: int( 0 ), end: steps, type: 'int', condition: '<' }, ( { i } ) => {
+			it.assign( float( i ).div( float( steps ) ) );
+			If( dot( p, d ).greaterThan( 0 ).and( length( p ).greaterThan( BODY_R ) ), () => { it.assign( 1 ); Break(); } );
+			l.assign( fsliced( p, 0 ) );
+			p.addAssign( d.mul( l ).mul( U.marchStep ) );
+			l.assign( abs( l ) );
+			r.addAssign( l );
+			If( l.lessThan( select( h.x.greaterThan( 0 ), U.hitOut.add( r.mul( .0005 ) ), r.mul( .01 ) ) ), () => { Break(); } );
+		} );
+		If( it.lessThan( 1 ), () => { res.assign( vec2( h.x.mul( l ), length( p0.sub( p ) ) ) ); } );
+	} );
+	return res;
+} ).setLayout( { name: 'rm', type: 'vec2', inputs: [ { name: 'p0', type: 'vec3' }, { name: 'd0', type: 'vec3' }, { name: 'steps', type: 'int' } ] } );
+
+// x: signed hit (0 = miss), y: distance, z: material id (2 = glass)
+const intersection = ( p, d, steps = U.marchSteps ) => {
+	const t = rm( p, d, steps ).toVar();
+	const h = vec3( 0, 500, - 1 );
+	return mix( h, vec3( t, 2 ), abs( sign( t.x ) ).mul( step( t.y, 500 ) ).mul( step( 0, t.y ) ) );
+};
+
+const calcNormal = Fn( ( [ p ] ) => {
+	const n = vec3( 0 ).toVar();
+	Loop( { start: int( 0 ), end: int( 6 ), type: 'int', condition: '<' }, ( { i } ) => {
+		const axis = vec3(
+			select( i.lessThan( 2 ), float( 1 ), float( 0 ) ),
+			select( i.greaterThanEqual( 2 ).and( i.lessThan( 4 ) ), float( 1 ), float( 0 ) ),
+			select( i.greaterThanEqual( 4 ), float( 1 ), float( 0 ) ) );
+		const e = axis.mul( select( i.bitAnd( 1 ).equal( 0 ), float( 1 ), float( - 1 ) ) ).toVar();
+		n.addAssign( e.mul( fsliced( p.add( e.mul( U.normalEps ) ), 0 ) ) );
+	} );
+	return normalize( n );
+} ).setLayout( { name: 'calcNormal', type: 'vec3', inputs: [ { name: 'p', type: 'vec3' } ] } );
+
+const calcAO = Fn( ( [ p, n ] ) => {
+	const occ = float( 0 ).toVar(), sca = float( 1 ).toVar();
+	Loop( { start: int( 0 ), end: int( 5 ), type: 'int', condition: '<' }, ( { i } ) => {
+		const h = float( .03 ).add( U.aoRadius.mul( float( i ) ).div( 4 ) ).toVar();
+		const d = fsliced( p.add( n.mul( h ) ), 0 );
+		occ.addAssign( max( h.sub( d ), 0 ).mul( sca ) );
+		sca.mulAssign( .85 );
+	} );
+	return clamp( float( 1 ).sub( U.aoStrength.mul( occ ).div( U.aoRadius ) ), 0, 1 );
+} ).setLayout( { name: 'calcAO', type: 'float', inputs: [ { name: 'p', type: 'vec3' }, { name: 'n', type: 'vec3' } ] } );
+
+const cameraRay = ( fc ) => {
+	const uv = fc.mul( 2 ).sub( R ).div( R.y );
+	return normalize( U.cu.mul( uv.x.negate() ).add( U.cv.mul( uv.y ) ).add( U.cw.mul( U.focal ) ) );
+};
+
+// ---------------------------------------------------------------- milestone 1 image: geometry debug shading
+const imageGeometry = Fn( () => {
+	const fc = vec2( screenUV.x, float( 1 ).sub( screenUV.y ) ).mul( R ); // Shadertoy fragCoord
+	const p = U.cam.toVar(), d = cameraRay( fc ).toVar();
+	const h = intersection( p, d ).toVar();
+	const col = vec3( .02, .025, .05 ).toVar();
+	If( h.x.notEqual( 0 ), () => {
+		p.addAssign( d.mul( h.y ) );
+		const n = calcNormal( p ).toVar();
+		const ao = calcAO( p, n );
+		const l = normalize( vec3( 0, 35, 0 ).add( vec3( cos( U.time.mul( 2 ) ), 0, sin( U.time.mul( 2 ) ) ).mul( 10 ) ).sub( p ) );
+		col.assign( n.mul( .5 ).add( .5 ).mul( float( .3 ).add( max( dot( n, l ), 0 ).mul( .7 ) ) ).mul( ao ) );
+	} );
+	return vec4( col, 1 );
+} );
+
+
+const one = float( 1 );
+const hsv2rgb = ( c ) => {
+	const p = abs( fract( vec3( c.x ).add( vec3( 1, 2 / 3, 1 / 3 ) ) ).mul( 6 ).sub( 3 ) );
+	return mix( vec3( 1 ), clamp( p.sub( 1 ), 0, 1 ), c.y ).mul( c.z );
+};
+const onehot = ( i ) => vec3( select( i.equal( 0 ), one, float( 0 ) ), select( i.equal( 1 ), one, float( 0 ) ), select( i.equal( 2 ), one, float( 0 ) ) );
+const fresnel = ( d, n ) => G.R0.add( one.sub( G.R0 ).mul( pow( one.sub( abs( dot( n, d ) ) ), 4 ) ) );
+const box2 = ( p, b ) => { const d = abs( p ).sub( b ); return length( max( d, 0 ) ).add( min( max( d.x, d.y ), 0 ) ); };
+const rayPlane = ( ro, rd, pl ) => dot( ro, pl.xyz ).add( pl.w ).negate().div( dot( rd, pl.xyz ) );
+const h21 = ( v ) => fract( sin( dot( v, vec2( 127.1, 311.7 ) ) ).mul( 43758.5453 ) );
+
+const vnoise = Fn( ( [ p ] ) => {
+	const i = floor( p ), f0 = fract( p );
+	const f = f0.mul( f0 ).mul( float( 3 ).sub( f0.mul( 2 ) ) );
+	const a = h21( i ), b = h21( i.add( vec2( 1, 0 ) ) ), c = h21( i.add( vec2( 0, 1 ) ) ), d = h21( i.add( vec2( 1, 1 ) ) );
+	return mix( mix( a, b, f.x ), mix( c, d, f.x ), f.y );
+} ).setLayout( { name: 'vnoise', type: 'float', inputs: [ { name: 'p', type: 'vec2' } ] } );
+
+const hash33 = Fn( ( [ p0 ] ) => {
+	const p = fract( p0.mul( vec3( .1031, .1030, .0973 ) ) ).toVar();
+	p.addAssign( dot( p, p.yxz.add( 33.33 ) ) );
+	return fract( p.xxy.add( p.yxx ).mul( p.zyx ) );
+} ).setLayout( { name: 'hash33', type: 'vec3', inputs: [ { name: 'p0', type: 'vec3' } ] } );
+
+// ---------------------------------------------------------------- studio (analytic environment)
+const wallHit = ( ro, rd ) => {
+	const sg = vec2( select( rd.x.lessThan( 0 ), float( - 1 ), one ), select( rd.z.lessThan( 0 ), float( - 1 ), one ) );
+	const tw = sg.mul( G.LIGHT_R ).sub( ro.xz ).div( max( abs( rd.xz ), 1e-5 ) ).mul( sg );
+	return { sg, tw, q: ro.add( rd.mul( min( tw.x, tw.y ) ) ).toVar() };
+};
+
+const lineLights = ( ro, rd ) => {
+	const { sg, tw, q } = wallHit( ro, rd );
+	const along = float( 0 ).toVar(), cell = float( 0 ).toVar();
+	If( tw.y.lessThan( tw.x ), () => { along.assign( sg.y.negate().mul( q.x ) ); cell.assign( select( sg.y.lessThan( 0 ), float( 0 ), float( 2 ) ) ); } )
+		.Else( () => { along.assign( sg.x.mul( q.z ) ); cell.assign( select( sg.x.lessThan( 0 ), one, float( 3 ) ) ); } );
+	const uv = vec2( along, q.y.sub( G.LIGHT_Y ) ).div( G.LIGHT_SIZE ).add( .5 ).toVar();
+	const tm = U.time.mul( G.LIGHT_DRIFT ), ta = U.time.mul( G.LIGHT_ANIM_SPEED );
+	const sum = float( 0 ).toVar();
+	const n = select( cell.lessThan( .5 ), G.LIGHT_BARS.x, select( cell.lessThan( 1.5 ), G.LIGHT_BARS.y, select( cell.lessThan( 2.5 ), G.LIGHT_BARS.z, G.LIGHT_BARS.w ) ) ).toVar();
+	const len = G.LIGHT_COVER.mul( 2 ).mul( G.LIGHT_R ).div( G.LIGHT_SIZE ).toVar();
+	const ns = G.LIGHT_SAMPLES.toFloat();
+	Loop( { start: int( 0 ), end: int( 4 ), type: 'int', condition: '<' }, ( { i: k } ) => {
+		const kf = k.toFloat();
+		If( kf.greaterThanEqual( n ), () => { Break(); } );
+		const y = float( .5 ).add( kf.sub( n.sub( 1 ).mul( .5 ) ).mul( .1 ) ).toVar();
+		const cl0 = vnoise( vec2( ta.mul( .45 ), kf.mul( 13.7 ).add( cell.mul( 7.9 ) ) ) );
+		const cl = cl0.mul( .6 ).add( vnoise( vec2( ta.mul( 1.1 ).add( 3.1 ), kf.mul( 5.3 ).add( cell.mul( 11.3 ) ) ) ).mul( .4 ) );
+		const pulse = mix( one.sub( G.LIGHT_PULSE ), one.add( G.LIGHT_PULSE ), smoothstep( .2, .8, cl ) ).toVar();
+		const illum = float( 0 ).toVar();
+		const dy = sqrt( uv.y.sub( y ).mul( uv.y.sub( y ) ).add( G.LIGHT_CORE.mul( G.LIGHT_CORE ) ) ).toVar();
+		Loop( { start: int( 0 ), end: G.LIGHT_SAMPLES, type: 'int', condition: '<' }, ( { i } ) => {
+			const x0 = float( .5 ).sub( len.mul( .5 ) ).add( len.mul( i.toFloat() ).div( ns ) ).toVar();
+			const x1 = x0.add( len.div( ns ) ).toVar();
+			const mid = uv.add( vec2( clamp( uv.x, x0, x1 ), y ) ).mul( .5 ).add( vec2( cell.mul( 37.1 ), 0 ) );
+			const cloud = vnoise( mid.mul( vec2( 3, 6 ) ).add( vec2( tm, tm.mul( .3 ) ) ).add( kf.mul( 7.3 ) ) );
+			const w = mix( one.sub( G.LIGHT_FLICKER ), one.add( G.LIGHT_FLICKER ), smoothstep( .25, .75, cloud ) );
+			illum.addAssign( w.mul( atan( x1.sub( uv.x ).div( dy ) ).sub( atan( x0.sub( uv.x ).div( dy ) ) ) ).div( dy ) );
+		} );
+		const v = pow( illum.mul( G.LIGHT_SCALE ), .4 );
+		sum.addAssign( pulse.mul( G.LIGHT_SOFT ).mul( log( one.add( exp( v.sub( G.LIGHT_HAZE ).div( G.LIGHT_SOFT ) ) ) ) ) );
+	} );
+	return vec3( sum.mul( .4 ) );
+};
+
+const cornerShade = ( ro, rd ) => {
+	const { tw, q } = wallHit( ro, rd );
+	const along = select( tw.y.lessThan( tw.x ), q.x, q.z );
+	const c = smoothstep( G.LIGHT_R.mul( one.sub( G.CORNER_DARK ) ), G.LIGHT_R, abs( along ) );
+	return one.sub( G.CORNER_POWER.mul( c ).mul( c ).mul( float( 3 ).sub( c.mul( 2 ) ) ) );
+};
+
+const studio = Fn( ( [ ro0, rd, skyCol ] ) => {
+	const col = vec3( 0 ).toVar();
+	If( G.LIGHT_GAIN.greaterThan( 0 ), () => {
+		col.assign( lineLights( ro0, rd ).mul( skyCol ).mul( G.LIGHT_GAIN ).mul( cornerShade( ro0, rd ) ) );
+	} );
+	const ro = ro0.div( G.SKY_SCALE ).toVar();
+	const tp0 = rayPlane( ro, rd, vec4( 0, 1, 0, 4 ) ).toVar();
+	const tp1 = rayPlane( ro, rd, vec4( 0, - 1, 0, 6 ) ).toVar();
+	If( tp1.greaterThan( 0 ).and( rd.y.greaterThan( 0 ) ), () => {
+		const pp = ro.add( rd.mul( tp1 ) ).xz.toVar();
+		const db = box2( pp, vec2( 6, 9 ) ).sub( 1 ).toVar();
+		const cs = vec2( 14, 20 ).div( G.SOFTBOX_PANELS );
+		const g = pp.add( vec2( 7, 10 ) ).div( cs ).toVar();
+		const id = floor( g ), f = fract( g ).sub( .5 ).toVar();
+		const fr = float( .5 ).sub( G.SOFTBOX_FRAME );
+		const frame = smoothstep( .5, fr, abs( f.x ) ).mul( smoothstep( .5, fr, abs( f.y ) ) );
+		const panel = one.sub( G.SOFTBOX_HOT.mul( smoothstep( 0, .6, length( f ) ) ) );
+		const vary = one.sub( G.SOFTBOX_VARY.mul( fract( sin( dot( id, vec2( 12.9898, 78.233 ) ) ).mul( 43758.5453 ) ) ) );
+		const rim = one.sub( G.SOFTBOX_RIM.mul( smoothstep( .2, 1.1, length( pp.div( vec2( 7, 10 ) ) ) ) ) );
+		const light = mix( G.SOFTBOX_SHADOW, one, frame.mul( panel ).mul( vary ).mul( rim ) ).toVar();
+		const in0 = smoothstep( G.SOFTBOX_EDGE, G.SOFTBOX_EDGE.negate(), db );
+		const inside = in0.mul( in0 ).toVar();
+		col.addAssign( skyCol.mul( 4 ).mul( rd.y.mul( rd.y ) ).mul( inside ).mul( light ).mul( light ) );
+		col.addAssign( skyCol.mul( .8 ).mul( exp( max( db, 0 ).mul( - .5 ) ) ).mul( mix( one, light, inside ) ) );
+	} );
+	If( tp0.greaterThan( 0 ).and( rd.y.lessThan( 0 ) ), () => {
+		const pp = ro.add( rd.mul( tp0 ) ).xz;
+		const ds = length( pp ).sub( .5 );
+		col.addAssign( skyCol.mul( .25 ).mul( exp( max( ds, 0 ).mul( - .5 ) ) ) );
+	} );
+	return clamp( col, 0, 10 );
+} ).setLayout( { name: 'studio', type: 'vec3', inputs: [ { name: 'ro0', type: 'vec3' }, { name: 'rd', type: 'vec3' }, { name: 'skyCol', type: 'vec3' } ] } );
+
+// ---------------------------------------------------------------- dust particles (3D grid DDA)
+const particles = Fn( ( [ ro, rd, tmax ] ) => {
+	const sum = float( 0 ).toVar();
+	If( G.PART_GAIN.greaterThan( 0 ), () => {
+		const t = U.time;
+		const flow = vec3( .13, .32, - .07 ).mul( t ).mul( G.PART_SPEED ).toVar();
+		const q = ro.add( flow ).div( G.PART_CELL ).toVar();
+		const cell = floor( q ).toVar();
+		const st = sign( rd ).toVar();
+		const ard = max( abs( rd ), 1e-5 ).toVar();
+		const tDelta = abs( one.div( ard ) ).mul( G.PART_CELL ).toVar();
+		const tNext = abs( cell.add( max( st, 0 ) ).sub( q ).div( ard ).mul( st ).mul( G.PART_CELL ) ).toVar();
+		const pix = float( 2 ).div( R.y.mul( U.focal ) );
+		Loop( { start: int( 0 ), end: G.PART_STEPS, type: 'int', condition: '<' }, () => {
+			const hc = hash33( cell.mul( 1.31 ).add( 7.7 ) ).toVar();
+			If( hc.x.lessThan( G.PART_DENSITY ), () => {
+				const hp = hash33( cell.add( 19.1 ) ).toVar();
+				const wob = sin( t.mul( G.PART_SPEED ).mul( hp.yzx.add( .7 ) ).add( hp.mul( 6.2831 ) ) ).mul( .12 );
+				const pp = cell.add( .15 ).add( hp.mul( .7 ) ).add( wob ).mul( G.PART_CELL ).sub( flow ).toVar();
+				const tt = dot( pp.sub( ro ), rd ).toVar();
+				If( tt.greaterThan( 0 ).and( tt.lessThan( tmax ) ), () => {
+					const dd = length( ro.add( rd.mul( tt ) ).sub( pp ) );
+					const rad = max( G.PART_SIZE.mul( one.add( max( float( 6 ).sub( tt ), 0 ).mul( .25 ) ) ), tt.mul( pix ).mul( .8 ) ).toVar();
+					const e = G.PART_SIZE.div( rad );
+					const fade = smoothstep( .8, 3.5, tt ).mul( exp( tt.mul( - .035 ) ) );
+					const spark = float( .4 ).add( hc.y.mul( hc.y ).mul( 1.6 ) );
+					sum.addAssign( exp( dd.mul( dd ).negate().div( rad.mul( rad ) ) ).mul( e ).mul( e ).mul( fade ).mul( spark ) );
+				} );
+			} );
+			const tn = min( tNext.x, min( tNext.y, tNext.z ) ).toVar();
+			If( tn.greaterThan( tmax ), () => { Break(); } );
+			const m = step( tNext, vec3( tn ) ).toVar();
+			cell.addAssign( m.mul( st ) );
+			tNext.addAssign( m.mul( tDelta ) );
+		} );
+	} );
+	return G.PART_COL.mul( sum ).mul( G.PART_GAIN );
+} ).setLayout( { name: 'particles', type: 'vec3', inputs: [ { name: 'ro', type: 'vec3' }, { name: 'rd', type: 'vec3' }, { name: 'tmax', type: 'float' } ] } );
+
+const aces = ( v0 ) => {
+	const v = max( v0, 0 ).mul( .6 );
+	return clamp( v.mul( v.mul( 2.51 ).add( .03 ) ).div( v.mul( v.mul( 2.43 ).add( .59 ) ).add( .14 ) ), 0, 1 );
+};
+const sRGB = ( t ) => mix( pow( t, vec3( 1 / 2.4 ) ).mul( 1.055 ).sub( .055 ), t.mul( 12.92 ), step( t, vec3( .0031308 ) ) );
+
+// ---------------------------------------------------------------- pixel(): primary ray, reflections and refractions in ONE loop
+// mode 0 = primary, 1 = reflection chain, 2 = refraction chain (GLSL pixel(), same control flow)
+// Inlined at its single call site (the lens-CA loop). Making it a layout function hid the
+// uniforms of the functions it calls from three's uniform registration in r186.
+const pixel = ( fc ) => {
+	const p = U.cam.toVar(), d = cameraRay( fc ).toVar();
+	const h = vec3( 0 ).toVar(), n = vec3( 0 ).toVar();
+	const fx = float( 0 ).toVar(), fy = float( 0 ).toVar();
+	const c = vec3( 0 ).toVar(), a = vec3( 1 ).toVar();
+	const r = float( 1 ).toVar(), w = float( 0 ).toVar(), ao = float( 1 ).toVar();
+	const p0 = p.toVar(), d0 = d.toVar(), h0 = h.toVar(), n0 = n.toVar(), fx0 = float( 0 ).toVar(), fy0 = float( 0 ).toVar();
+	const mode = int( 0 ).toVar(), cnt = int( 0 ).toVar();
+	const tHit = float( 40 ).toVar();
+	const exIn = d.toVar(), exN = n.toVar(), exW = float( 0 ).toVar(), exOut = float( 0 ).toVar();
+	const skyCol = hsv2rgb( vec3( G.SKY_HUE, G.SKY_SAT, 1 ) ).toVar();
+	const roomCol = hsv2rgb( vec3( G.ROOM_HUE, G.ROOM_SAT, G.ROOM_BRIGHT ) ).toVar();
+
+	Loop( { start: int( 0 ), end: G.REFLECTIONS.add( G.REFRACTIONS ).add( 1 ), type: 'int', condition: '<' }, () => {
+		If( mode.equal( 1 ), () => {
+			If( fx.lessThan( .5 ).or( cnt.equal( G.REFLECTIONS ) ), () => {
+				mode.assign( 2 ); cnt.assign( 0 );
+				p.assign( p0 ); d.assign( d0 ); h.assign( h0 ); n.assign( n0 ); fx.assign( fx0 ); fy.assign( fy0 ); w.assign( 0 );
+			} ).Else( () => {
+				r.mulAssign( fresnel( d, n ) );
+				d.assign( reflect( d, n ) );
+				p.addAssign( n.mul( h.x ) );
+				cnt.addAssign( 1 );
+			} );
+		} );
+		If( mode.equal( 2 ), () => {
+			If( fy.lessThan( .5 ).or( cnt.equal( G.REFRACTIONS ) ), () => { Break(); } );
+			const dt = d.toVar();
+			const sh = sign( h.x ).toVar();
+			a.mulAssign( one.sub( fresnel( d, n ).mul( one.sub( w ) ) ) );
+			d.assign( refract( d, n.mul( sh ), mix( G.ETA, one.div( G.ETA ), sh.mul( .5 ).add( .5 ) ) ) );
+			const tir = dot( d, d ).equal( 0 ).toVar();
+			exIn.assign( dt ); exN.assign( n.mul( sh ) ); exW.assign( w );
+			exOut.assign( select( h.x.lessThan( 0 ).and( tir.not() ), one, float( 0 ) ) );
+			If( tir, () => { d.assign( reflect( dt, n ) ); } );
+			d.assign( normalize( mix( d, dt, w ) ) );
+			If( tir.and( w.lessThan( .5 ) ), () => { h.assign( vec3( h.x.negate(), h.y, h.z ) ); } );
+			p.subAssign( n.mul( h.x ) );
+			cnt.addAssign( 1 );
+		} );
+
+		// primary ray keeps the full budget (it defines the outline); reflections/refractions may use fewer
+		h.assign( intersection( p, d, select( mode.equal( 0 ), U.marchSteps, U.marchSteps2 ) ) );
+
+		If( h.x.equal( 0 ), () => {
+			const wgt = select( mode.equal( 0 ), vec3( 1 ), select( mode.equal( 1 ), vec3( r ), a ) ).toVar();
+			const env = select( mode.equal( 0 ), roomCol, skyCol ).toVar();
+			const nch = select( mode.equal( 2 ).and( exOut.greaterThan( .5 ) ).and( G.CA_SPREAD.greaterThan( 0 ) ), int( 3 ), int( 1 ) ).toVar();
+			const esc = vec3( 0 ).toVar();
+			Loop( { start: int( 0 ), end: int( 3 ), type: 'int', condition: '<' }, ( { i: ch } ) => {
+				If( ch.greaterThanEqual( nch ), () => { Break(); } );
+				const dc = d.toVar(), mask = vec3( 1 ).toVar();
+				If( nch.equal( 3 ), () => {
+					const dr = refract( exIn, exN, G.ETA.add( G.CA_SPREAD.mul( ch.toFloat().sub( 1 ) ) ) ).toVar();
+					If( dot( dr, dr ).greaterThan( 0 ), () => { dc.assign( normalize( mix( dr, exIn, exW ) ) ); } );
+					mask.assign( onehot( ch ) );
+				} );
+				esc.addAssign( studio( p, dc, env ).mul( mask ) );
+			} );
+			c.addAssign( esc.mul( wgt ) );
+			If( mode.equal( 1 ), () => { fx.assign( 0 ); Continue(); } );
+			Break();
+		} );
+
+		If( mode.equal( 2 ), () => {
+			a.mulAssign( mix( exp( G.ABSORB.mul( h.y.negate() ) ), vec3( 1 ), sign( h.x ).mul( .5 ).add( .5 ) ) );
+		} );
+
+		// info(): move to hit, normal, glass diffuse + highlight
+		p.addAssign( d.mul( h.y ) );
+		fx.assign( 1 ); fy.assign( 1 );
+		n.assign( calcNormal( p ) );
+		const l = normalize( vec3( 0, 35, 0 ).add( vec3( cos( U.time.mul( 2 ) ), 0, sin( U.time.mul( 2 ) ) ).mul( 10 ) ).sub( p ) );
+		const ph = pow( max( dot( reflect( l, n ), d ), 0 ), 64 );
+		const ci = G.GLASS_COL.mul( G.GLASS_DIFF ).mul( max( dot( n, l ), 0 ) ).add( smoothstep( .6, .8, ph ).mul( .8 ) ).toVar();
+
+		If( mode.equal( 0 ), () => {
+			tHit.assign( h.y );
+			c.assign( ci );
+			a.assign( mix( exp( G.FIRST_ABS.mul( h.y.negate() ) ), vec3( 1 ), sign( h.x ).mul( .5 ).add( .5 ) ) );
+			ao.assign( calcAO( p, n ) );
+			p0.assign( p ); d0.assign( d ); h0.assign( h ); n0.assign( n ); fx0.assign( fx ); fy0.assign( fy );
+			mode.assign( 1 ); cnt.assign( 0 );
+		} ).ElseIf( mode.equal( 1 ), () => {
+			c.addAssign( ci.mul( r ) );
+		} ).Else( () => {
+			w.assign( select( h.x.lessThan( 0 ), fsliced( p, 1 ), float( 0 ) ) ); // healing()
+			c.addAssign( ci.mul( a ).mul( one.sub( w ) ) );
+		} );
+	} );
+
+	c.mulAssign( ao );
+	c.addAssign( particles( U.cam, cameraRay( fc ), tHit ) );
+	return vec4( aces( c ), tHit ); // a = primary hit distance (edge detection for refine)
+};
+
+// ---------------------------------------------------------------- final image: lens CA (pixel() from one loop), sRGB, grain
+const imageFinal = Fn( () => {
+	const fc = vec2( screenUV.x, one.sub( screenUV.y ) ).mul( R ).toVar();
+	const rad0 = fc.sub( R.mul( .5 ) ).div( R.y.mul( .5 ) ).toVar();
+	const rl = length( rad0 ).toVar();
+	const rad = rad0.div( max( rl, 1e-3 ) ).mul( mix( G.CA_CENTER, one, min( rl, 1 ) ) ).mul( max( rl, 1 ) ).toVar();
+	const nch = select( G.CA_LENS.greaterThan( 0 ), int( 3 ), int( 1 ) ).toVar();
+	const col = vec3( 0 ).toVar();
+	Loop( { start: int( 0 ), end: int( 3 ), type: 'int', condition: '<' }, ( { i: ch } ) => {
+		If( ch.greaterThanEqual( nch ), () => { Break(); } );
+		const three = select( nch.equal( 3 ), one, float( 0 ) );
+		const cs = pixel( fc.add( rad.mul( G.CA_LENS ).mul( ch.toFloat().sub( 1 ) ).mul( three ) ) ).xyz.toVar();
+		col.addAssign( select( nch.equal( 3 ), cs.mul( onehot( ch ) ), cs ) );
+	} );
+	col.assign( sRGB( col ) );
+	const guv = fc.div( R ).sub( .5 ).mul( vec2( R.x.div( R.y ), 1 ) ).toVar();
+	col.addAssign( fract( cos( dot( guv.add( col.xy ), vec2( 2.31, 53.21 ) ).mul( 124.123 ) ).mul( 412 ) ).mul( .02 ).mul( G.GRAIN ) );
+	const rnd = fract( sin( dot( guv, vec2( 12.9898, 78.233 ) ) ).mul( 43758.5453 ).add( U.frameMod.mul( .61803 ) ) );
+	col.assign( mix( col, col.mul( .85 ).add( col.mul( .25 ).mul( rnd ) ), G.GRAIN ) );
+	return vec4( clamp( col, 0, 1 ), 1 );
+} );
+
+
+// one trace per pixel, linear (post-ACES) output; lens CA, sRGB and grain happen in the post pass
+const imageLinear = Fn( () => {
+	const fc = vec2( screenUV.x, one.sub( screenUV.y ) ).mul( R );
+	return pixel( fc );
+} );
+
+return { imageFinal, imageGeometry, imageLinear, pixel };
+}
+
+// ---------------------------------------------------------------- post pass (upscale; optional lens CA + sRGB + grain)
+// Lens CA in the GLSL traces the scene 3 times with each channel's pixel shifted radially.
+// The shift is a pure screen-space offset, so sampling one traced image 3 times at the
+// same offsets gives nearly the same result for 1/3 of the cost (only bilinear softening).
+function buildPost( srcTex, texRes, allowUp = true, tracer = null ) {
+	const onehot = ( i ) => vec3( select( i.equal( 0 ), float( 1 ), float( 0 ) ), select( i.equal( 1 ), float( 1 ), float( 0 ) ), select( i.equal( 2 ), float( 1 ), float( 0 ) ) );
+	const one = float( 1 );
+	// Catmull-Rom from 9 bilinear taps (MJP's method). Much crisper than bilinear when the
+	// trace runs below canvas resolution; sharpen adds an unsharp mask against bilinear.
+	const sampleUp = Fn( ( [ uv ] ) => {
+		const res = vec3( 0 ).toVar();
+		const bil = texture( srcTex, uv ).rgb.toVar();
+		If( ( allowUp ? U.upscale : float( 0 ) ).lessThan( .5 ), () => { res.assign( bil ); } ).Else( () => {
+			const sp = uv.mul( texRes ).toVar();
+			const t1 = floor( sp.sub( .5 ) ).add( .5 ).toVar();
+			const f = sp.sub( t1 ).toVar();
+			const w0 = f.mul( f.mul( one.sub( f.mul( .5 ) ) ).sub( .5 ) );
+			const w1 = f.mul( f ).mul( f.mul( 1.5 ).sub( 2.5 ) ).add( 1 );
+			const w2 = f.mul( f.mul( float( 2 ).sub( f.mul( 1.5 ) ) ).add( .5 ) );
+			const w3 = f.mul( f ).mul( f.mul( .5 ).sub( .5 ) );
+			const w12 = w1.add( w2 ).toVar();
+			const t0 = t1.sub( 1 ).div( texRes ), t3 = t1.add( 2 ).div( texRes ), t12 = t1.add( w2.div( w12 ) ).div( texRes );
+			const a = w0.toVar(), c = w3.toVar();
+			const tap = ( x, y ) => texture( srcTex, vec2( x, y ) ).rgb;
+			res.assign(
+				tap( t0.x, t0.y ).mul( a.x.mul( a.y ) ).add( tap( t12.x, t0.y ).mul( w12.x.mul( a.y ) ) ).add( tap( t3.x, t0.y ).mul( c.x.mul( a.y ) ) )
+					.add( tap( t0.x, t12.y ).mul( a.x.mul( w12.y ) ) ).add( tap( t12.x, t12.y ).mul( w12.x.mul( w12.y ) ) ).add( tap( t3.x, t12.y ).mul( c.x.mul( w12.y ) ) )
+					.add( tap( t0.x, t3.y ).mul( a.x.mul( c.y ) ) ).add( tap( t12.x, t3.y ).mul( w12.x.mul( c.y ) ) ).add( tap( t3.x, t3.y ).mul( c.x.mul( c.y ) ) ) );
+			res.assign( max( res.add( res.sub( bil ).mul( U.sharpen ) ), 0 ) );
+		} );
+		return res;
+	} ).setLayout( { name: 'sampleUp', type: 'vec3', inputs: [ { name: 'uv', type: 'vec2' } ] } );
+	const copy = Fn( () => vec4( sampleUp( screenUV ), 1 ) );
+	const lens = Fn( () => {
+		const fc = vec2( screenUV.x, one.sub( screenUV.y ) ).mul( U.outRes ).toVar();
+		const rad0 = fc.sub( U.outRes.mul( .5 ) ).div( U.outRes.y.mul( .5 ) ).toVar();
+		const rl = length( rad0 ).toVar();
+		const rad = rad0.div( max( rl, 1e-3 ) ).mul( mix( G.CA_CENTER, one, min( rl, 1 ) ) ).mul( max( rl, 1 ) );
+		// CA_LENS is in canvas pixels, so the fringe keeps its size when the trace resolution drops
+		const sh = rad.mul( G.CA_LENS ).div( U.outRes ).mul( vec2( 1, - 1 ) ).toVar();
+		const col = vec3( 0 ).toVar();
+		If( G.CA_LENS.greaterThan( 0 ), () => {
+			Loop( { start: int( 0 ), end: int( 3 ), type: 'int', condition: '<' }, ( { i } ) => {
+				col.addAssign( sampleUp( screenUV.add( sh.mul( i.toFloat().sub( 1 ) ) ) ).mul( onehot( i ) ) );
+			} );
+		} ).Else( () => { col.assign( sampleUp( screenUV ) ); } ); // lens CA off: one sample
+		col.assign( mix( pow( col, vec3( 1 / 2.4 ) ).mul( 1.055 ).sub( .055 ), col.mul( 12.92 ), step( col, vec3( .0031308 ) ) ) );
+		const guv = fc.div( U.outRes ).sub( .5 ).mul( vec2( U.outRes.x.div( U.outRes.y ), 1 ) ).toVar();
+		col.addAssign( fract( cos( dot( guv.add( col.xy ), vec2( 2.31, 53.21 ) ).mul( 124.123 ) ).mul( 412 ) ).mul( .02 ).mul( G.GRAIN ) );
+		const rnd = fract( sin( dot( guv, vec2( 12.9898, 78.233 ) ) ).mul( 43758.5453 ).add( U.frameMod.mul( .61803 ) ) );
+		col.assign( mix( col, col.mul( .85 ).add( col.mul( .25 ).mul( rnd ) ), G.GRAIN ) );
+		return vec4( clamp( col, 0, 1 ), 1 );
+	} );
+	// Edge refine (mobile): the low-res trace stores the primary hit distance in alpha. Canvas
+	// pixels whose 2×2 low-res footprint spans a depth jump (outline, cut faces) or a strong
+	// brightness step are traced again at canvas resolution; everything else is upscaled.
+	const refine = tracer && Fn( () => {
+		const fc = vec2( screenUV.x, one.sub( screenUV.y ) ).mul( U.outRes ).toVar();
+		const t1 = floor( screenUV.mul( texRes ).sub( .5 ) ).add( .5 ).toVar();
+		const lw = vec3( .2126, .7152, .0722 );
+		const s00 = texture( srcTex, t1.div( texRes ) ).toVar();
+		const s10 = texture( srcTex, t1.add( vec2( 1, 0 ) ).div( texRes ) ).toVar();
+		const s01 = texture( srcTex, t1.add( vec2( 0, 1 ) ).div( texRes ) ).toVar();
+		const s11 = texture( srcTex, t1.add( vec2( 1, 1 ) ).div( texRes ) ).toVar();
+		const dr = max( max( s00.a, s10.a ), max( s01.a, s11.a ) ).sub( min( min( s00.a, s10.a ), min( s01.a, s11.a ) ) );
+		const l00 = dot( s00.rgb, lw ), l10 = dot( s10.rgb, lw ), l01 = dot( s01.rgb, lw ), l11 = dot( s11.rgb, lw );
+		const lr = max( max( l00, l10 ), max( l01, l11 ) ).sub( min( min( l00, l10 ), min( l01, l11 ) ) );
+		const edge = dr.greaterThan( U.refineDepth ).or( lr.greaterThan( U.refineLuma ) ).toVar();
+		const col = vec3( 0 ).toVar();
+		If( edge, () => { col.assign( tracer( fc ).xyz ); } ).Else( () => { col.assign( sampleUp( screenUV ) ); } );
+		If( edge.and( U.refineShow.greaterThan( .5 ) ), () => { col.assign( mix( col, vec3( 0, 1, .2 ), .6 ) ); } );
+		return vec4( col, 1 );
+	} );
+	return { copy, lens, refine };
+}
+
+// ---------------------------------------------------------------- quality presets
+export const isMobile = () => matchMedia( '(pointer: coarse)' ).matches || /Android|iPhone|iPad|iPod/i.test( navigator.userAgent );
+export const PRESETS = {
+	// canvasScale: 0 = canvas at device pixels (capped by maxDpr); > 0 = canvas buffer at
+	// canvasScale × CSS pixels, times fixedDpr only on screens with devicePixelRatio > 1;
+	// stretched back to full size by CSS (mobile)
+	desktop: { ca: 'exact', canvasScale: 0, fixedDpr: 1, resScale: 0.75, adaptive: false, targetFps: 50, maxDpr: 2,
+		REFLECTIONS: 3, REFRACTIONS: 6, MARCH_STEPS: 80, MARCH_STEPS_2ND: 80, PART_STEPS: 48, LIGHT_SAMPLES: 12, CA_LENS: 4, upscale: 0, sharpen: 0, minScale: 0.25, refine: false },
+	mobile: { ca: 'post', canvasScale: 1, fixedDpr: 1.75, resScale: 0.5, adaptive: true, targetFps: 30, maxDpr: 2,
+		REFLECTIONS: 2, REFRACTIONS: 4, MARCH_STEPS: 64, MARCH_STEPS_2ND: 32, PART_STEPS: 24, LIGHT_SAMPLES: 6, CA_LENS: 0, upscale: 1, sharpen: 0.35, minScale: 0.3, refine: true },
+};
+const MARCH_UNIFORM = { MARCH_STEPS: 'marchSteps', MARCH_STEPS_2ND: 'marchSteps2' };
+export function applyPreset( state, name ) {
+	const pr = PRESETS[ name ];
+	state.quality = name;
+	for ( const k of [ 'ca', 'canvasScale', 'fixedDpr', 'resScale', 'adaptive', 'targetFps', 'maxDpr', 'minScale' ] ) state[ k ] = pr[ k ];
+	U.upscale.value = pr.upscale; U.sharpen.value = pr.sharpen; state.upscale = pr.upscale; state.sharpen = pr.sharpen; state.refine = pr.refine;
+	state.refineDepth ??= 0.3; state.refineLuma ??= 0.2; state.refineShow ??= false;
+	for ( const k of [ 'REFLECTIONS', 'REFRACTIONS', 'PART_STEPS', 'LIGHT_SAMPLES', 'CA_LENS' ] ) setQ( k, pr[ k ] );
+	for ( const k in MARCH_UNIFORM ) { P[ k ] = pr[ k ]; U[ MARCH_UNIFORM[ k ] ].value = pr[ k ]; }
+	state.resize?.();
+}
+
+// ---------------------------------------------------------------- app
+// Pass 1 traces into a half-float target at resScale × canvas resolution; pass 2 draws it to the canvas.
+export async function start( { canvas, onFrame, still = null, quality = null, view = 'final', frame = 0, bench = 0, mouse = [ 0, 0 ], overrides = {} } ) {
+	const renderer = new THREE.WebGPURenderer( { canvas, antialias: false } );
+	renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+	renderer.toneMapping = THREE.NoToneMapping;
+	await renderer.init();
+
+	const makeMat = ( node ) => {
+		const m = new THREE.MeshBasicNodeMaterial();
+		m.vertexNode = vec4( positionGeometry.xy, 0, 1 );
+		m.fragmentNode = node;
+		return m;
+	};
+	const quadScene = ( mat ) => {
+		const sc = new THREE.Scene(), me = new THREE.Mesh( new THREE.PlaneGeometry( 2, 2 ), mat );
+		me.frustumCulled = false; sc.add( me );
+		return { scene: sc, mesh: me };
+	};
+	const camera = new THREE.OrthographicCamera( - 1, 1, 1, - 1, 0, 1 );
+	const rt = new THREE.RenderTarget( 1, 1, { type: THREE.HalfFloatType, depthBuffer: false } );
+	rt.texture.minFilter = rt.texture.magFilter = THREE.LinearFilter;
+	const rt2 = new THREE.RenderTarget( 1, 1, { type: THREE.HalfFloatType, depthBuffer: false } ); // refined, canvas res
+	rt2.texture.minFilter = rt2.texture.magFilter = THREE.LinearFilter;
+
+	// materials are built lazily, each from its own shader factory (see buildShaders)
+	const builders = {
+		final: () => buildShaders().imageFinal(), linear: () => buildShaders().imageLinear(), geometry: () => buildShaders().imageGeometry(),
+		copy: () => buildPost( rt.texture, U.res ).copy(),
+		lens: () => buildPost( rt.texture, U.res ).lens(),
+		refine: () => buildPost( rt.texture, U.res, true, buildShaders( U.outRes ).pixel ).refine(),
+		lens2: () => buildPost( rt2.texture, U.outRes, false ).lens(),
+	};
+	const mats = {};
+	const mat = ( k ) => mats[ k ] ??= makeMat( builders[ k ]() );
+	const pass1 = quadScene( mat( 'final' ) ), passR = quadScene( mat( 'copy' ) ), pass2 = quadScene( mat( 'copy' ) );
+
+	const state = { frame, view, mouse: new THREE.Vector2( 0, 0 ), mouseN: new THREE.Vector2( ...mouse ), paused: false, speed: 1, time: still ?? 0 };
+	applyPreset( state, quality ?? ( isMobile() ? 'mobile' : 'desktop' ) );
+	Object.assign( state, overrides );
+
+	const outSize = new THREE.Vector2(), size = new THREE.Vector2();
+	const resize = () => {
+		renderer.setPixelRatio( state.canvasScale > 0 ? ( devicePixelRatio > 1 ? state.fixedDpr : 1 ) * state.canvasScale : Math.min( devicePixelRatio, state.maxDpr ) );
+		renderer.setSize( canvas.clientWidth, canvas.clientHeight, false );
+		renderer.getDrawingBufferSize( outSize );
+		size.set( Math.max( 1, Math.round( outSize.x * state.resScale ) ), Math.max( 1, Math.round( outSize.y * state.resScale ) ) );
+		rt.setSize( size.x, size.y );
+		rt2.setSize( outSize.x, outSize.y );
+		U.res.value.copy( size );
+		U.outRes.value.copy( outSize );
+	};
+	state.resize = resize;
+	resize();
+	new ResizeObserver( resize ).observe( canvas );
+
+	let drag = false;
+	const setMouse = ( e ) => {
+		const r = canvas.getBoundingClientRect();
+		state.mouseN.set( ( e.clientX - r.left ) / r.width, 1 - ( e.clientY - r.top ) / r.height );
+	};
+	canvas.addEventListener( 'pointerdown', ( e ) => { drag = true; canvas.setPointerCapture( e.pointerId ); setMouse( e ); } );
+	canvas.addEventListener( 'pointermove', ( e ) => { if ( drag ) setMouse( e ); } );
+	canvas.addEventListener( 'pointerup', () => { drag = false; } );
+	canvas.addEventListener( 'dblclick', () => state.mouseN.set( 0, 0 ) );
+
+	const update = () => {
+		U.time.value = state.time;
+		U.frameMod.value = state.frame % 1000;
+		U.upscale.value = state.upscale; U.sharpen.value = state.sharpen;
+		const lensPost = state.view === 'final' && state.ca === 'post';
+		state.refining = lensPost && state.refine && state.resScale < 0.999;
+		U.refineDepth.value = state.refineDepth; U.refineLuma.value = state.refineLuma; U.refineShow.value = state.refineShow ? 1 : 0;
+		pass1.mesh.material = mat( state.view === 'geometry' ? 'geometry' : lensPost ? 'linear' : 'final' );
+		if ( state.refining ) passR.mesh.material = mat( 'refine' );
+		pass2.mesh.material = mat( state.refining ? 'lens2' : lensPost ? 'lens' : 'copy' );
+		state.mouse.set( state.mouseN.x * size.x, state.mouseN.y * size.y );
+		sliceAnim( state.time );
+		setupCamera( state.mouse, size );
+	};
+	const draw = ( target = null ) => {
+		renderer.setRenderTarget( rt );
+		renderer.render( pass1.scene, camera );
+		if ( state.refining ) { renderer.setRenderTarget( rt2 ); renderer.render( passR.scene, camera ); }
+		renderer.setRenderTarget( target );
+		renderer.render( pass2.scene, camera );
+	};
+
+	if ( still !== null ) {
+		update();
+		const out = new THREE.RenderTarget( outSize.x, outSize.y, { type: THREE.UnsignedByteType } );
+		draw( out );
+		const px = await renderer.readRenderTargetPixelsAsync( out, 0, 0, outSize.x, outSize.y );
+		let benchMs = 0;
+		if ( bench > 0 ) {
+			const dev = renderer.backend.device;
+			const t0 = performance.now();
+			for ( let i = 0; i < bench; i ++ ) { draw( out ); await dev.queue.onSubmittedWorkDone(); }
+			benchMs = ( performance.now() - t0 ) / bench;
+		}
+		renderer.setRenderTarget( null );
+		return { renderer, state, px, size: outSize, benchMs };
+	}
+
+	// adaptive resolution: nudge resScale towards the target frame time every half second
+	let last = performance.now(), acc = 0, n = 0;
+	renderer.setAnimationLoop( () => {
+		const now = performance.now(), dt = ( now - last ) / 1000;
+		last = now;
+		if ( ! state.paused ) state.time += dt * state.speed;
+		update();
+		draw();
+		state.frame ++;
+		if ( state.adaptive ) {
+			acc += dt; n ++;
+			if ( acc > 0.5 ) {
+				const ms = acc / n * 1000, target = 1000 / state.targetFps;
+				const s = ms > target * 1.15 ? state.resScale * Math.max( 0.75, target / ms ) : ms < target * 0.8 ? state.resScale * 1.06 : state.resScale;
+				const c = Math.min( 1, Math.max( state.minScale, s ) );
+				if ( Math.abs( c - state.resScale ) > 0.01 ) { state.resScale = c; resize(); }
+				acc = 0; n = 0;
+			}
+		}
+		onFrame?.( dt, state );
+	} );
+	return { renderer, state };
+}
+
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  page
+// ═══════════════════════════════════════════════════════════════════
+
+const canvas = document.getElementById( 'c' );
+const forced = new URLSearchParams( location.search ).get( 'quality' ); // ?quality=mobile to test on desktop
+let ms = 16, frames = 0, firstFrame = true;
+const stats = { info: '' };
+let resB = null, statB = null;
+const app = await start( {
+	canvas, quality: PRESETS[ forced ] ? forced : null,
+	onFrame: ( dt, st ) => {
+		if ( firstFrame ) { firstFrame = false; document.getElementById( 'loader' ).classList.add( 'hidden' ); }
+		ms = ms * 0.95 + dt * 1000 * 0.05;
+		if ( ( ++ frames & 15 ) === 0 ) {
+			stats.info = `${app.renderer.backend.isWebGPUBackend ? 'WebGPU' : 'WebGL2'} · ${st.quality} · ${ms.toFixed( 1 )} ms\n` +
+				`canvas ${U.outRes.value.x}×${U.outRes.value.y} · trace ${U.res.value.x}×${U.res.value.y}${st.refining ? ' + edges' : ''}`;
+			statB?.refresh();
+			if ( st.adaptive ) resB?.refresh();
+		}
+	}
+} );
+const st = app.state;
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  tweakpane
+// ═══════════════════════════════════════════════════════════════════
+
+const pane = new Pane( { container: document.getElementById( 'pane-container' ), title: 'Controls', expanded: false } );
+let cur = pane;
+const syncs = []; // proxies that mirror array params (refreshed after presets)
+const folder = ( title, fn ) => { cur = pane.addFolder( { title, expanded: false } ); fn(); };
+const bind = ( obj, key, opts = {}, cb ) => {
+	const b = cur.addBinding( obj, key, opts );
+	if ( cb ) b.on( 'change', ( e ) => cb( e.value ) );
+	return b;
+};
+// body params live in P (+ uniform in U), shading params in Q (setQ updates the uniform)
+const pu = ( key, uni, min, max, step, label ) => bind( P, key, { min, max, step, label }, v => { if ( uni ) uni.value = v; } );
+const qu = ( key, min, max, step, label ) => bind( Q, key, { min, max, step, label }, v => setQ( key, v ) );
+const vecCtl = ( key, labels, min, max, step ) => {
+	const o = {};
+	const sync = () => labels.forEach( ( l, i ) => { o[ l ] = Q[ key ][ i ]; } );
+	sync(); syncs.push( sync );
+	labels.forEach( l => bind( o, l, { min, max, step, label: `${key} ${l}` }, () => setQ( key, labels.map( k => o[ k ] ) ) ) );
+};
+const colCtl = ( key ) => {
+	const o = { c: {} };
+	const sync = () => { const [ r, g, b ] = Q[ key ]; o.c = { r, g, b }; };
+	sync(); syncs.push( sync );
+	bind( o, 'c', { label: key, view: 'color', color: { type: 'float' }, picker: 'inline', expanded: false }, v => setQ( key, [ v.r, v.g, v.b ] ) );
+};
+const refreshAll = () => { syncs.forEach( f => f() ); pane.refresh(); };
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  render quality
+// ═══════════════════════════════════════════════════════════════════
+
+folder( 'Render quality', () => {
+	statB = cur.addBinding( stats, 'info', { readonly: true, multiline: true, rows: 2, label: 'stats' } );
+	bind( st, 'quality', { label: 'preset', options: Object.fromEntries( Object.keys( PRESETS ).map( k => [ k, k ] ) ) }, v => { applyPreset( st, v ); refreshAll(); } );
+	bind( st, 'ca', { label: 'lens CA', options: { 'exact (3 traces)': 'exact', 'post pass (1 trace)': 'post' } } );
+	bind( st, 'fixedDpr', { min: 0.5, max: 3, step: 0.05, label: 'pixel ratio' }, () => st.resize() );
+	bind( st, 'canvasScale', { min: 0, max: 1, step: 0.05, label: 'canvas scale' }, () => st.resize() );
+	resB = bind( st, 'resScale', { min: 0.1, max: 1, step: 0.01, label: 'trace res' }, () => st.resize() );
+	bind( st, 'adaptive', { label: 'adaptive' } );
+	bind( st, 'minScale', { min: 0.1, max: 1, step: 0.05, label: 'adapt floor' } );
+	bind( st, 'targetFps', { min: 20, max: 60, step: 1, label: 'target fps' } );
+	bind( st, 'upscale', { label: 'upscale', options: { bilinear: 0, 'Catmull-Rom': 1 } } );
+	bind( st, 'sharpen', { min: 0, max: 1, step: 0.01 } );
+	bind( st, 'refine', { label: 'edge refine' } );
+	bind( st, 'refineDepth', { min: 0.02, max: 3, step: 0.01, label: 'refine depth' } );
+	bind( st, 'refineLuma', { min: 0.02, max: 2, step: 0.01, label: 'refine luma' } );
+	bind( st, 'refineShow', { label: 'show refined' } );
+} );
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  body
+// ═══════════════════════════════════════════════════════════════════
+
+folder( 'Body', () => {
+	bind( P, 'BODY_SHAPE', { options: { octahedron: 1, cube: 0 } }, v => U.shape.value = + v );
+	pu( 'OCTA_SIZE', U.octaSize, 2, 4, 0.01 );
+	pu( 'OCTA_ROUND', U.octaRound, 0, 1.2, 0.01 );
+	pu( 'STAR_SIZE', U.starSize, 0.3, 1, 0.01 );
+	pu( 'BEND', U.bend, 0, 0.6, 0.01 );
+} );
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  slicing
+// ═══════════════════════════════════════════════════════════════════
+
+folder( 'Slicing', () => {
+	for ( const k of [ 'SLICE_CUT', 'SLICE_CLOSE', 'SLICE_HOLD', 'SLICE_REST' ] ) bind( P, k, { min: 0.2, max: 8, step: 0.1 } );
+	bind( P, 'SLICE_RANDOM' );
+	bind( P, 'SLICE_MIN_ANGLE', { min: 0, max: 1.5, step: 0.01 } );
+	bind( P, 'SLICE_MAX_ANGLE', { min: 0, max: 1.5, step: 0.01 } );
+	pu( 'SLICE_AMOUNT', U.amount, 0, 2, 0.01 );
+	pu( 'SLICE_HEAL', U.heal, 0.01, 1, 0.01 );
+	pu( 'INNER_FACETS', U.inner, 0, 1, 0.01 );
+} );
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  glass
+// ═══════════════════════════════════════════════════════════════════
+
+folder( 'Glass', () => {
+	const tint = { GLASS_TINT: 'blood orange' };
+	bind( tint, 'GLASS_TINT', { options: Object.fromEntries( Object.keys( TINTS ).map( k => [ k, k ] ) ) }, v => {
+		for ( const [ k, val ] of Object.entries( TINTS[ v ] ) ) setQ( k, Array.isArray( val ) ? [ ...val ] : val );
+		refreshAll();
+	} );
+	colCtl( 'GLASS_COL' );
+	vecCtl( 'ABSORB', [ 'r', 'g', 'b' ], 0, 3, 0.01 );
+	vecCtl( 'FIRST_ABS', [ 'r', 'g', 'b' ], 0, 4, 0.01 );
+	qu( 'SKY_HUE', 0, 1, 0.005 );
+	qu( 'ETA', 1, 1.6, 0.005 );
+	qu( 'R0', 0, 0.2, 0.005 );
+	qu( 'GLASS_DIFF', 0, 1.5, 0.01 );
+	qu( 'REFLECTIONS', 0, 6, 1 );
+	qu( 'REFRACTIONS', 0, 12, 1 );
+} );
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  studio
+// ═══════════════════════════════════════════════════════════════════
+
+folder( 'Studio', () => {
+	qu( 'ROOM_HUE', 0, 1, 0.005 ); qu( 'ROOM_SAT', 0, 1, 0.01 ); qu( 'ROOM_BRIGHT', 0, 1.5, 0.01 );
+	qu( 'SKY_SAT', 0, 1, 0.01 ); qu( 'SKY_SCALE', 0.5, 3, 0.01 );
+	vecCtl( 'SOFTBOX_PANELS', [ 'x', 'y' ], 1, 8, 1 );
+	for ( const k of [ 'SOFTBOX_FRAME', 'SOFTBOX_SHADOW', 'SOFTBOX_HOT', 'SOFTBOX_VARY', 'SOFTBOX_RIM' ] ) qu( k, 0, 1, 0.01 );
+	qu( 'SOFTBOX_EDGE', 0.1, 4, 0.01 );
+	qu( 'LIGHT_GAIN', 0, 3, 0.01, 'LIGHT_GAIN' );
+	vecCtl( 'LIGHT_BARS', [ 'back', 'left', 'front', 'right' ], 0, 4, 1 );
+	qu( 'LIGHT_COVER', 0.1, 1, 0.01 ); qu( 'LIGHT_Y', - 5, 5, 0.05 ); qu( 'LIGHT_SAMPLES', 2, 24, 1 );
+	qu( 'LIGHT_DRIFT', 0, 1, 0.01 ); qu( 'LIGHT_FLICKER', 0, 1, 0.01 ); qu( 'LIGHT_PULSE', 0, 1, 0.01 );
+	qu( 'LIGHT_ANIM_SPEED', 0, 3, 0.01 ); qu( 'LIGHT_HAZE', 0, 1, 0.01 ); qu( 'LIGHT_SOFT', 0.01, 0.3, 0.005 );
+	qu( 'CORNER_DARK', 0, 1, 0.01 ); qu( 'CORNER_POWER', 0, 1, 0.01 );
+} );
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  extras
+// ═══════════════════════════════════════════════════════════════════
+
+folder( 'Extras', () => {
+	qu( 'CA_LENS', 0, 10, 0.1, 'CA_LENS' );
+	qu( 'CA_CENTER', 0, 1, 0.01 );
+	qu( 'CA_SPREAD', 0, 0.5, 0.005, 'CA_SPREAD' );
+	qu( 'PART_GAIN', 0, 2, 0.01, 'PART_GAIN' );
+	qu( 'PART_DENSITY', 0, 1, 0.01 ); qu( 'PART_SIZE', 0.002, 0.03, 0.001 ); qu( 'PART_SPEED', 0, 3, 0.01 );
+	qu( 'PART_STEPS', 8, 96, 1 );
+	colCtl( 'PART_COL' );
+	qu( 'GRAIN', 0, 1, 0.01 );
+	pu( 'AO_STRENGTH', U.aoStrength, 0, 2, 0.01 );
+	pu( 'AO_RADIUS', U.aoRadius, 0.1, 1.5, 0.01 );
+} );
+
+</script>
+</body>
+</html>
