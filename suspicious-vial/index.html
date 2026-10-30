@@ -1,0 +1,1250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Suspicious Vial.</title>
+<link rel="stylesheet" href="./styles/styles.css" />
+</head>
+<body>
+<div id="app"></div>
+<div id="pane-container"></div>
+<div id="title-block">
+  <span id="title-eyebrow">Tinker Day #50</span>
+  <span id="title-headline">Suspicious Vial<sup>reloaded.</sup></span>
+  <p>
+    Mousedown &amp; move to rotate.<br>Hover over the glass to<br>wobble, deform &amp; create<br>ripples.<br><br>
+    <span class="tech-stack">WebGPU · three.js · TSL</span><br />
+  </p>
+</div>
+<footer><a id="nav-prev-all" href="https://dasprinzip.com/tinker/index.html">&#8593; Checkout all days</a><a id="nav-prev" href="https://dasprinzip.com/tinker/day49/"><br>&larr; The Day Before.</a></footer>
+<nav id="social-links" aria-label="Social media">
+<ul>
+                            <li>
+                              <a href="https://x.com/_pwd_" target="_blank" rel="noopener noreferrer" aria-label="Twitter / X — @_pwd_" title="Twitter / X — @_pwd_"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 24" class="icon" aria-hidden="true" focusable="false"><g transform="translate(5 2) scale(1.25)"><path d="M5.026 15c6.038 0 9.341-5.003 9.341-9.334 0-.14 0-.282-.009-.422A6.68 6.68 0 0 0 16 3.542a6.656 6.656 0 0 1-1.889.518 3.301 3.301 0 0 0 1.447-1.817 6.533 6.533 0 0 1-2.087.793 3.286 3.286 0 0 0-5.596 2.994 9.325 9.325 0 0 1-6.767-3.43 3.286 3.286 0 0 0 1.018 4.382A3.323 3.323 0 0 1 .64 6.575v.045a3.288 3.288 0 0 0 2.632 3.218 3.203 3.203 0 0 1-.865.115 3.23 3.23 0 0 1-.614-.057 3.283 3.283 0 0 0 3.067 2.28A6.588 6.588 0 0 1 0 13.536 9.29 9.29 0 0 0 5.026 15z"/></g></svg></a>
+                            </li>
+                            <li>
+                              <a href="https://www.linkedin.com/in/frank-reitberger-86590727/" target="_blank" rel="noopener noreferrer" aria-label="LinkedIn — Frank Reitberger" title="LinkedIn — Frank Reitberger">
+                                <svg aria-hidden="true" focusable="false" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 30 24" xml:space="preserve" class="icon">
+                                <path d="M19.6,19v-5.8c0-1.4-0.5-2.4-1.7-2.4c-1,0-1.5,0.7-1.8,1.3C16,12.3,16,12.6,16,13v6h-3.4
+                                  c0,0,0.1-9.8,0-10.8H16v1.5c0,0,0,0,0,0h0v0C16.4,9,17.2,7.9,19,7.9c2.3,0,4,1.5,4,4.9V19H19.6z M8.9,6.7L8.9,6.7
+                                  C7.7,6.7,7,5.9,7,4.9C7,3.8,7.8,3,8.9,3s1.9,0.8,1.9,1.9C10.9,5.9,10.1,6.7,8.9,6.7z M10.6,19H7.2V8.2h3.4V19z"/>
+                                </svg>
+                              </a>
+                            </li>
+                            <li>
+                              <a href="https://www.shadertoy.com/user/_pwd_" target="_blank" rel="noopener noreferrer" aria-label="Shadertoy — _pwd_" title="Shadertoy — _pwd_"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 24" class="icon icon-shadertoy" aria-hidden="true" focusable="false"><defs><clipPath id="shadertoy-icon-clip"><circle cx="15" cy="12" r="9"/></clipPath></defs><image href="./assets/shadertoy.png" x="5" y="2" width="20" height="20"/></svg></a>
+                            </li>
+                            <li>
+                              <a href="https://www.instagram.com/frankreitberger/" target="_blank" rel="noopener noreferrer" aria-label="Instagram — @frankreitberger" title="Instagram — @frankreitberger">
+                                <svg aria-hidden="true" focusable="false" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 30 24" xml:space="preserve" class="icon">
+                                <g>
+                                  <path d="M15,5.4c2.1,0,2.4,0,3.2,0c0.8,0,1.2,0.2,1.5,0.3c0.4,0.1,0.6,0.3,0.9,0.6c0.3,0.3,0.5,0.5,0.6,0.9
+                                    c0.1,0.3,0.2,0.7,0.3,1.5c0,0.8,0,1.1,0,3.2s0,2.4,0,3.2c0,0.8-0.2,1.2-0.3,1.5c-0.1,0.4-0.3,0.6-0.6,0.9c-0.3,0.3-0.5,0.5-0.9,0.6
+                                    c-0.3,0.1-0.7,0.2-1.5,0.3c-0.8,0-1.1,0-3.2,0s-2.4,0-3.2,0c-0.8,0-1.2-0.2-1.5-0.3c-0.4-0.1-0.6-0.3-0.9-0.6
+                                    c-0.3-0.3-0.5-0.5-0.6-0.9c-0.1-0.3-0.2-0.7-0.3-1.5c0-0.8,0-1.1,0-3.2s0-2.4,0-3.2c0-0.8,0.2-1.2,0.3-1.5c0.1-0.4,0.3-0.6,0.6-0.9
+                                    c0.3-0.3,0.5-0.5,0.9-0.6c0.3-0.1,0.7-0.2,1.5-0.3C12.6,5.4,12.9,5.4,15,5.4 M15,4c-2.2,0-2.4,0-3.3,0c-0.9,0-1.4,0.2-1.9,0.4
+                                    c-0.5,0.2-1,0.5-1.4,0.9C7.9,5.8,7.6,6.2,7.4,6.8C7.2,7.3,7.1,7.9,7,8.7C7,9.6,7,9.8,7,12s0,2.4,0,3.3c0,0.9,0.2,1.4,0.4,1.9
+                                    c0.2,0.5,0.5,1,0.9,1.4c0.4,0.4,0.9,0.7,1.4,0.9c0.5,0.2,1.1,0.3,1.9,0.4c0.9,0,1.1,0,3.3,0s2.4,0,3.3,0c0.9,0,1.4-0.2,1.9-0.4
+                                    c0.5-0.2,1-0.5,1.4-0.9c0.4-0.4,0.7-0.9,0.9-1.4c0.2-0.5,0.3-1.1,0.4-1.9c0-0.9,0-1.1,0-3.3s0-2.4,0-3.3c0-0.9-0.2-1.4-0.4-1.9
+                                    c-0.2-0.5-0.5-1-0.9-1.4c-0.4-0.4-0.9-0.7-1.4-0.9c-0.5-0.2-1.1-0.3-1.9-0.4C17.4,4,17.2,4,15,4L15,4L15,4z"/>
+                                  <path d="M15,7.9c-2.3,0-4.1,1.8-4.1,4.1s1.8,4.1,4.1,4.1s4.1-1.8,4.1-4.1S17.3,7.9,15,7.9L15,7.9z M15,14.7c-1.5,0-2.7-1.2-2.7-2.7
+                                    c0-1.5,1.2-2.7,2.7-2.7s2.7,1.2,2.7,2.7C17.7,13.5,16.5,14.7,15,14.7L15,14.7z"/>
+                                  <path d="M20.2,7.7c0,0.5-0.4,1-1,1s-1-0.4-1-1s0.4-1,1-1S20.2,7.2,20.2,7.7L20.2,7.7z"/>
+                                </g>
+                                </svg>
+                              </a>
+                            </li>
+                            
+                    </ul>
+</nav>
+<div id="loader" role="status" aria-live="polite"><div class="spinner"></div><div class="loading-text">loading<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></div></div>
+<div id="tag"><span id="backend">…</span></div>
+<div class="err" id="err">Could not start the renderer. This demo needs WebGPU.</div>
+
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.185.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.185.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.185.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.0/examples/jsm/",
+    "tweakpane": "https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import {
+  Fn, positionLocal, normalLocal, positionGeometry,
+  uniformArray, uniform, Loop, If, int, float, vec3, vec2,
+  length, exp, cos, sin, min, dot, normalize, transformNormalToView,
+  pass, screenUV, time, mix, smoothstep, texture, vec4, attribute
+} from 'three/tsl';
+import { RenderPipeline } from 'three/webgpu';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { Pane } from 'tweakpane';
+import { HDRLoader } from 'three/addons/loaders/HDRLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  framebuffer resize fix (#34636)
+// ═══════════════════════════════════════════════════════════════════
+
+if (THREE.REVISION === '185' && !Object.hasOwn(THREE.FramebufferTexture.prototype, 'copy')) {
+  const copyTexture = THREE.Texture.prototype.copy;
+  THREE.FramebufferTexture.prototype.copy = function (source) {
+    copyTexture.call(this, source);
+    this.source = new source.source.constructor({ ...source.image });
+    return this;
+  };
+}
+
+const container = document.getElementById('app');
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  renderer / scene / camera
+// ═══════════════════════════════════════════════════════════════════
+
+const renderer = new THREE.WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
+renderer.setSize(window.innerWidth, window.innerHeight);
+container.appendChild(renderer.domElement);
+
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+const scene = new THREE.Scene();
+const liquidScene = new THREE.Scene();
+const loaderElement = document.getElementById('loader');
+const loadingText = document.querySelector('#loader .loading-text');
+const errorElement = document.getElementById('err');
+function showRendererError(error) {
+  console.error(error);
+  loaderElement.classList.add('hidden');
+  errorElement.textContent = 'Could not start the renderer: ' + (error.message || error);
+  errorElement.classList.add('is-visible');
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  Venice Sunset HDR — Greg Zaal / Poly Haven (CC0)
+// ═══════════════════════════════════════════════════════════════════
+
+const ENV_SRC = 'https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/venice_sunset_1k.hdr';
+let pmremGen, environmentTarget, environmentTexture;
+async function loadEnvironment() {
+  try {
+    const hdr = await new HDRLoader().loadAsync(ENV_SRC);
+    hdr.mapping = THREE.EquirectangularReflectionMapping;
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  linear HDR texture
+    // ═══════════════════════════════════════════════════════════════════
+
+    environmentTexture = hdr;
+    environmentTarget = pmremGen.fromEquirectangular(hdr);
+    liquidScene.background = hdr;
+  } catch (error) {
+    const room = new RoomEnvironment();
+    environmentTarget = pmremGen.fromScene(room, 0.04);
+    room.dispose();
+    liquidScene.background = new THREE.Color(0x8799a5);
+    loadingText.textContent = 'Loading the studio environment…';
+    console.warn('HDR unavailable; using studio environment.', error);
+  }
+  scene.environment = liquidScene.environment = environmentTarget.texture;
+}
+
+const camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(0, 1.8, 5.15);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.enablePan = false;
+controls.enableZoom = false;
+controls.autoRotate = false;
+controls.autoRotateSpeed = 1.6;
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  lights
+// ═══════════════════════════════════════════════════════════════════
+
+const key = new THREE.DirectionalLight(0xffffff, 2.2);
+key.position.set(-3, 4, 5);
+scene.add(key);
+const rim = new THREE.DirectionalLight(0xffd9c8, 1.4);
+rim.position.set(4, -2, -3);
+scene.add(rim);
+scene.add(new THREE.AmbientLight(0xffffff, 0.08));
+for (const light of scene.children.filter(o => o.isLight)) liquidScene.add(light.clone());
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  faceted geometry
+// ═══════════════════════════════════════════════════════════════════
+
+const SUB = 18;
+const RADIUS = 0.98;
+
+function buildPolyhedron(radius, sub, shape = 'dodecahedron') {
+  const Ctor = shape === 'icosahedron'
+    ? THREE.IcosahedronGeometry
+    : THREE.DodecahedronGeometry;
+  const base = new Ctor(radius, 0);
+  const bp = base.getAttribute('position');
+  const P = [];
+  const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3();
+  const e1 = new THREE.Vector3(), e2 = new THREE.Vector3();
+  const vert = (i, j) => new THREE.Vector3().copy(A).addScaledVector(e1, i / sub).addScaledVector(e2, j / sub);
+  for (let f = 0; f < bp.count; f += 3) {
+    A.fromBufferAttribute(bp, f);
+    B.fromBufferAttribute(bp, f + 1);
+    C.fromBufferAttribute(bp, f + 2);
+    e1.subVectors(B, A);
+    e2.subVectors(C, A);
+    for (let i = 0; i < sub; i++) {
+      for (let j = 0; j < sub - i; j++) {
+        const p0 = vert(i, j), p1 = vert(i + 1, j), p2 = vert(i, j + 1);
+        P.push(p0.x, p0.y, p0.z, p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
+        if (j < sub - i - 1) {
+          const q0 = vert(i + 1, j), q1 = vert(i + 1, j + 1), q2 = vert(i, j + 1);
+          P.push(q0.x, q0.y, q0.z, q1.x, q1.y, q1.z, q2.x, q2.y, q2.z);
+        }
+      }
+    }
+  }
+  base.dispose();
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+  return g;
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  shell geometry
+// ═══════════════════════════════════════════════════════════════════
+
+let ROUND = 0.15;
+
+function makeShellGeometry(shape, round = ROUND) {
+  let g = buildPolyhedron(RADIUS, SUB, shape);
+  g = mergeVertices(g, 1e-5);
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  rounded edges
+  // ═══════════════════════════════════════════════════════════════════
+
+  const pos = g.getAttribute('position');
+  const v = new THREE.Vector3(), sph = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    sph.copy(v).normalize().multiplyScalar(RADIUS);
+    v.lerp(sph, round);
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  pos.needsUpdate = true;
+  g.computeVertexNormals();
+  g.computeBoundingSphere();
+  return g;
+}
+
+let geometry = makeShellGeometry('dodecahedron');
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  glass material
+// ═══════════════════════════════════════════════════════════════════
+
+const material = new THREE.MeshPhysicalNodeMaterial({
+  color: 0xfffaf5,
+  roughness: 0.055,
+  metalness: 0.0,
+  transmission: 1.0,
+  thickness: 0.035,
+  ior: 1.75,
+  attenuationColor: new THREE.Color(0xf4e9de),
+  attenuationDistance: 5.9,
+  clearcoat: 0.12,
+  clearcoatRoughness: 0.035,
+  iridescence: 1.00,
+  iridescenceIOR: 1.3,
+  side: THREE.FrontSide,
+});
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  shared ripple settings
+// ═══════════════════════════════════════════════════════════════════
+
+const uWobble    = uniform(0.045);
+const uRipSpeed  = uniform(1.4);
+const uRipWidth  = uniform(6.0);
+const uRipFreq   = uniform(9.0);
+const uRipDecay  = uniform(2.6);
+const uNormalAmt = uniform(0.7);
+
+
+const ball = new THREE.Mesh(geometry, material);
+scene.add(ball);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  liquid volume
+// ═══════════════════════════════════════════════════════════════════
+
+const LIQ_R = RADIUS * 0.955, FILL = 0.43;
+const uLevel = { value: -LIQ_R + 2 * LIQ_R * FILL };
+const uLiquidOpacity = uniform(0.71);
+const uOpticalLevel = uniform(uLevel.value);
+let liquidShown = true, simulationTime = 0;
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  subsurface scattering
+// ═══════════════════════════════════════════════════════════════════
+
+const uScatterDensity = uniform(1.1);
+const uScatterColor = uniform(new THREE.Color(0xc4df80));
+const uScatterSpread = uniform(0.45);
+const liquidMaterial = new THREE.MeshSSSNodeMaterial({
+  color: 0xf4ffe6, roughness: 0.035, metalness: 0,
+  transmission: 1, thickness: 0.7, ior: 1.333,
+  attenuationColor: new THREE.Color(0x9ac73c), attenuationDistance: 1 / 1.15,
+  clearcoat: 0, dispersion: 0.015, side: THREE.FrontSide,
+});
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  optical depth
+// ═══════════════════════════════════════════════════════════════════
+
+const liquidOpticalPath = float(0.12).add(
+  uOpticalLevel.sub(positionLocal.y).max(0).mul(1.4)
+);
+liquidMaterial.thicknessNode = liquidOpticalPath;
+const scatterDepth = liquidOpticalPath.mul(uScatterDensity);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  light absorption
+// ═══════════════════════════════════════════════════════════════════
+
+liquidMaterial.transmissionNode = exp(scatterDepth.negate());
+liquidMaterial.thicknessColorNode = uScatterColor;
+liquidMaterial.thicknessDistortionNode = uScatterSpread;
+liquidMaterial.thicknessPowerNode = float(3.8).sub(uScatterSpread.mul(3));
+liquidMaterial.thicknessScaleNode = float(2.7);
+liquidMaterial.thicknessAmbientNode = float(0.08);
+liquidMaterial.thicknessAttenuationNode = exp(scatterDepth.mul(-0.4)).mul(0.7);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  liquid scene
+// ═══════════════════════════════════════════════════════════════════
+
+const liquidRoot = new THREE.Group();
+liquidScene.add(liquidRoot);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  inner shell
+// ═══════════════════════════════════════════════════════════════════
+
+const INNER_SCALE = 0.955;
+const CAP_ROWS = 26;
+const MAX_LIQUID_VERTICES = 180000;
+const positions = new Float32Array(MAX_LIQUID_VERTICES * 3);
+const liquidNormals = new Float32Array(MAX_LIQUID_VERTICES * 3);
+const liquidGeo = new THREE.BufferGeometry();
+liquidGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3).setUsage(THREE.DynamicDrawUsage));
+liquidGeo.setAttribute('normal', new THREE.BufferAttribute(liquidNormals, 3).setUsage(THREE.DynamicDrawUsage));
+liquidGeo.setDrawRange(0, 0);
+liquidGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), RADIUS + 0.16);
+const liquid = new THREE.Mesh(liquidGeo, liquidMaterial);
+liquidRoot.add(liquid);
+
+let shellRestPositions, shellRestNormals, shellRadialDirections, innerPositions, innerSurfaceHeights, shellIndices;
+let liquidVertexCount = 0, liquidWallVertexCount = 0;
+const cutPoints = [];
+const cutPointPool = [];
+const capSelected = [];
+const clipFields = ['x', 'y', 'z', 'nx', 'ny', 'nz'];
+const sortCutAngle = (a, b) => a.angle - b.angle;
+const clipVertex = () => ({ x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0, d: 0, angle: 0 });
+const triScratch = Array.from({ length: 3 }, clipVertex);
+const crossScratch = Array.from({ length: 3 }, clipVertex);
+const clipOutput = [];
+const capScratch = Array.from({ length: 4 }, clipVertex);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  vessel columns
+// ═══════════════════════════════════════════════════════════════════
+
+class VesselColumns {
+  constructor(cells = 32, extent = 1.14) {
+    this.cells = cells; this.extent = extent;
+    this.bins = Array.from({ length: cells * cells }, () => new Uint32Array(128));
+    this.counts = new Uint16Array(cells * cells);
+    this.triangles = new Float64Array(0);
+  }
+  cell(value) { return Math.max(0, Math.min(this.cells - 1, Math.floor((value + this.extent) * this.cells / (2 * this.extent)))); }
+  rebuild(p, indices) {
+    if (this.triangles.length !== indices.length * 4) this.triangles = new Float64Array(indices.length * 4);
+    this.counts.fill(0);
+    const data = this.triangles, n = this.cells;
+    for (let f = 0; f < indices.length; f += 3) {
+      const a = indices[f] * 3, b = indices[f + 1] * 3, c = indices[f + 2] * 3;
+      const x = p[a], y = p[a + 1], z = p[a + 2];
+      const ax = p[b] - x, az = p[b + 2] - z, ay = p[b + 1] - y;
+      const bx = p[c] - x, bz = p[c + 2] - z, by = p[c + 1] - y;
+      const determinant = ax * bz - az * bx;
+      if (Math.abs(determinant) < 1e-11) continue;
+      const offset = f * 4, inv = 1 / determinant;
+      data[offset] = x; data[offset + 1] = z; data[offset + 2] = y;
+      data[offset + 3] = ax; data[offset + 4] = az; data[offset + 5] = ay;
+      data[offset + 6] = bx; data[offset + 7] = bz; data[offset + 8] = by;
+      data[offset + 9] = inv;
+      data[offset + 10] = (ay * bz - by * az) * inv;
+      data[offset + 11] = (ax * by - bx * ay) * inv;
+      const x0 = this.cell(Math.min(x, p[b], p[c])), x1 = this.cell(Math.max(x, p[b], p[c]));
+      const z0 = this.cell(Math.min(z, p[b + 2], p[c + 2])), z1 = this.cell(Math.max(z, p[b + 2], p[c + 2]));
+      for (let iz = z0; iz <= z1; iz++) for (let ix = x0; ix <= x1; ix++) {
+        const cell = iz * n + ix, slot = this.counts[cell]++;
+        let bin = this.bins[cell];
+        if (slot === bin.length) { const grown = new Uint32Array(bin.length * 2); grown.set(bin); this.bins[cell] = bin = grown; }
+        bin[slot] = offset;
+      }
+    }
+  }
+  sample(x, z, out, preferredY = 0) {
+    out.low = Infinity; out.high = -Infinity;
+    const heights = out.hitHeights || (out.hitHeights = new Float64Array(128));
+    const offsets = out.hitOffsets || (out.hitOffsets = new Int32Array(128));
+    const data = this.triangles;
+    let count = 0;
+    const cell = this.cell(z) * this.cells + this.cell(x), bin = this.bins[cell], binCount = this.counts[cell];
+    for (let entry = 0; entry < binCount; entry++) {
+      const k = bin[entry];
+      const dx = x - data[k], dz = z - data[k + 1], inv = data[k + 9];
+      const u = (dx * data[k + 7] - dz * data[k + 6]) * inv;
+      const v = (data[k + 3] * dz - data[k + 4] * dx) * inv;
+      if (u < -1e-6 || v < -1e-6 || u + v > 1.000001) continue;
+      const y = data[k + 2] + u * data[k + 5] + v * data[k + 8];
+      let position = count;
+      while (position > 0 && heights[position - 1] > y) position--;
+      if ((position && Math.abs(heights[position - 1] - y) < 1e-7)
+        || (position < count && Math.abs(heights[position] - y) < 1e-7)) continue;
+      if (count === heights.length) continue;
+      for (let j = count; j > position; j--) { heights[j] = heights[j - 1]; offsets[j] = offsets[j - 1]; }
+      heights[position] = y; offsets[position] = k; count++;
+    }
+    let distance = Infinity, width = -1;
+
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  column intervals
+    // ═══════════════════════════════════════════════════════════════════
+
+    for (let i = 0; i + 1 < count; i += 2) {
+      const low = heights[i], high = heights[i + 1];
+      const d = Math.max(low - preferredY, preferredY - high, 0);
+      if (d > distance + 1e-9 || (Math.abs(d - distance) < 1e-9 && high - low <= width)) continue;
+      const a = offsets[i], b = offsets[i + 1];
+      distance = d; width = high - low;
+      out.low = low; out.high = high;
+      out.lowX = data[a + 10]; out.lowZ = data[a + 11];
+      out.highX = data[b + 10]; out.highZ = data[b + 11];
+    }
+    return out.high >= out.low;
+  }
+}
+
+const vesselColumns = new VesselColumns(32, RADIUS + 0.16);
+const capBounds = {};
+const capCache = [];
+
+function rebuildLiquidBounds() {
+  shellRestPositions = ball.geometry.attributes.position.array.slice();
+  shellRestNormals = ball.geometry.attributes.normal.array.slice();
+  shellRadialDirections = new Float32Array(shellRestPositions.length);
+  for (let i = 0; i < shellRestPositions.length; i += 3) {
+    const x = shellRestPositions[i], y = shellRestPositions[i + 1], z = shellRestPositions[i + 2];
+    const inv = 1 / Math.sqrt(x * x + y * y + z * z);
+    shellRadialDirections[i] = x * inv; shellRadialDirections[i + 1] = y * inv; shellRadialDirections[i + 2] = z * inv;
+  }
+  innerPositions = new Float32Array(shellRestPositions.length);
+  innerSurfaceHeights = new Float32Array(shellRestPositions.length / 3);
+  shellIndices = ball.geometry.index.array;
+  ball.geometry.setAttribute('wobbleBasePosition', new THREE.BufferAttribute(shellRestPositions, 3));
+  ball.geometry.setAttribute('wobbleBaseNormal', new THREE.BufferAttribute(shellRestNormals, 3));
+  ball.geometry.boundingSphere.radius = RADIUS + 0.16;
+  updateShellGeometry();
+  vesselColumns.rebuild(innerPositions, shellIndices);
+  updateLiquidGeometry(simulationTime);
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  liquid wobble
+// ═══════════════════════════════════════════════════════════════════
+
+function liquidWobble(x, z) {
+  return shellDisplacement(x, uLevel.value, z) * liquidParams.wobbleGain;
+}
+const liquidSample = { height: 0, dx: 0, dz: 0 };
+function sampleLiquidWobble(x, z, out) {
+  let total = 0, gx = 0, gz = 0;
+  const width = uRipWidth.value, frequency = uRipFreq.value;
+  for (const wave of activeGlassRipples) {
+    const dx = x - wave.x, dy = uLevel.value - wave.y, dz = z - wave.z;
+    const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    const front = distance - wave.radius, phase = distance * frequency - wave.phase;
+    const envelope = Math.exp(-front * front * width) * wave.energy;
+    const cosine = Math.cos(phase), sine = Math.sin(phase);
+    total += cosine * envelope;
+    if (distance > 1e-8) {
+      const derivative = envelope * (-frequency * sine - 2 * width * front * cosine) / distance;
+      gx += derivative * dx; gz += derivative * dz;
+    }
+  }
+  const elastic = Math.tanh(total * uWobble.value / 0.12);
+  const gain = liquidParams.wobbleGain;
+  const derivativeScale = (1 - elastic * elastic) * uWobble.value * gain;
+  out.height = 0.12 * elastic * gain;
+  out.dx = gx * derivativeScale; out.dz = gz * derivativeScale;
+}
+function surfaceHeightCPU(x, z, t, radial = 0) {
+  const meniscus = liquidParams.meniscus * Math.exp((radial - 1) * 26);
+  return uLevel.value + liquidWobble(x, z) + meniscus;
+}
+function appendLiquidVertex(v) {
+  if (liquidVertexCount >= MAX_LIQUID_VERTICES) throw new Error('Liquid vertex capacity exceeded');
+  const i = liquidVertexCount++ * 3;
+  positions[i] = v.x; positions[i + 1] = v.y; positions[i + 2] = v.z;
+  liquidNormals[i] = v.nx; liquidNormals[i + 1] = v.ny; liquidNormals[i + 2] = v.nz;
+}
+function appendLiquidTriangle(a, b, c) {
+  appendLiquidVertex(a); appendLiquidVertex(b); appendLiquidVertex(c);
+}
+function setCapVertex(v, edge, fraction, t) {
+  const x = edge.x * fraction, z = edge.z * fraction;
+  v.x = x; v.z = z;
+  sampleLiquidWobble(x, z, liquidSample);
+  let y = uLevel.value + liquidSample.height + liquidParams.meniscus * Math.exp((fraction - 1) * 26);
+  const radius = Math.max(0.01, Math.hypot(edge.x, edge.z));
+  const meniscusSlope = liquidParams.meniscus * 26 * Math.exp((fraction - 1) * 26) / radius;
+  let slopeX = liquidSample.dx * uNormalAmt.value + meniscusSlope * edge.x / radius;
+  let slopeZ = liquidSample.dz * uNormalAmt.value + meniscusSlope * edge.z / radius;
+  if (fraction === 1) {
+    y = edge.y;
+  } else if (vesselColumns.sample(x, z, capBounds, y)) {
+    const margin = Math.min(0.006, (capBounds.high - capBounds.low) * 0.1);
+    if (y < capBounds.low + margin) {
+      y = capBounds.low + margin; slopeX = capBounds.lowX; slopeZ = capBounds.lowZ;
+    } else if (y > capBounds.high - margin) {
+      y = capBounds.high - margin; slopeX = capBounds.highX; slopeZ = capBounds.highZ;
+    }
+  }
+  v.y = y;
+  const inverseNormal = 1 / Math.sqrt(slopeX * slopeX + 1 + slopeZ * slopeZ);
+  v.nx = -slopeX * inverseNormal; v.ny = inverseNormal; v.nz = -slopeZ * inverseNormal;
+}
+function updateLiquidGeometry(t) {
+  liquidVertexCount = 0;
+  cutPoints.length = 0;
+  let cutPointCount = 0;
+  const shellNormals = ball.geometry.attributes.normal.array;
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  surface heights
+  // ═══════════════════════════════════════════════════════════════════
+
+  for (let i = 0; i < innerSurfaceHeights.length; i++) {
+    innerSurfaceHeights[i] = surfaceHeightCPU(innerPositions[i * 3], innerPositions[i * 3 + 2], t, 1);
+  }
+  for (let f = 0; f < shellIndices.length; f += 3) {
+    let inside = 0;
+    for (let j = 0; j < 3; j++) {
+      const i = shellIndices[f + j] * 3, v = triScratch[j];
+      v.x = innerPositions[i]; v.y = innerPositions[i + 1]; v.z = innerPositions[i + 2];
+      v.nx = shellNormals[i]; v.ny = shellNormals[i + 1]; v.nz = shellNormals[i + 2];
+      v.d = innerSurfaceHeights[shellIndices[f + j]] - v.y;
+      if (v.d >= 0) inside++;
+    }
+    if (!inside) continue;
+    if (inside === 3) { appendLiquidTriangle(...triScratch); continue; }
+    clipOutput.length = 0;
+    let crossings = 0;
+    for (let j = 0; j < 3; j++) {
+      const a = triScratch[j], b = triScratch[(j + 1) % 3];
+      if (a.d >= 0) clipOutput.push(a);
+      if ((a.d >= 0) !== (b.d >= 0)) {
+        const w = a.d / (a.d - b.d), v = crossScratch[crossings++];
+        for (const key of clipFields) v[key] = a[key] + (b[key] - a[key]) * w;
+        const inverseNormal = 1 / (Math.sqrt(v.nx * v.nx + v.ny * v.ny + v.nz * v.nz) || 1);
+        v.nx *= inverseNormal; v.ny *= inverseNormal; v.nz *= inverseNormal;
+        clipOutput.push(v);
+        let point = cutPointPool[cutPointCount];
+        if (!point) { point = { x: 0, y: 0, z: 0, angle: 0 }; cutPointPool[cutPointCount] = point; }
+        point.x = v.x; point.y = v.y; point.z = v.z; point.angle = Math.atan2(v.z, v.x);
+        cutPoints.push(point); cutPointCount++;
+      }
+    }
+    for (let j = 1; j < clipOutput.length - 1; j++) appendLiquidTriangle(clipOutput[0], clipOutput[j], clipOutput[j + 1]);
+  }
+  liquidWallVertexCount = liquidVertexCount;
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  cut edge welding
+  // ═══════════════════════════════════════════════════════════════════
+
+  cutPoints.sort(sortCutAngle);
+  let write = 0;
+  for (let read = 0; read < cutPoints.length; read++) {
+    const point = cutPoints[read], previous = write ? cutPoints[write - 1] : null;
+    if (!previous || (point.x - previous.x) ** 2 + (point.y - previous.y) ** 2 + (point.z - previous.z) ** 2 > 1e-12) {
+      cutPoints[write++] = point;
+    }
+  }
+  cutPoints.length = write;
+  if (cutPoints.length > 2 && Math.hypot(cutPoints[0].x - cutPoints.at(-1).x, cutPoints[0].z - cutPoints.at(-1).z) < 1e-6) cutPoints.pop();
+  const count = cutPoints.length;
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  liquid surface
+  // ═══════════════════════════════════════════════════════════════════
+
+  const capRows = uRipFreq.value > 14 ? CAP_ROWS : 16;
+  const angularSamples = uRipFreq.value > 14 ? 128 : 80;
+  const stride = Math.max(1, Math.ceil(count / angularSamples));
+  const selected = capSelected;
+  selected.length = 0;
+  for (let j = 0; j < count; j += stride) selected.push(j);
+  const columns = selected.length;
+  const outerOffset = (capRows + 1) * columns;
+  const needed = outerOffset + count;
+  while (capCache.length < needed) capCache.push(clipVertex());
+  for (let r = 0; r <= capRows; r++) {
+    const fraction = 0.90 * (1 - Math.pow(1 - r / capRows, 1.5));
+    for (let j = 0; j < columns; j++) setCapVertex(capCache[r * columns + j], cutPoints[selected[j]], fraction, t);
+  }
+  for (let j = 0; j < count; j++) setCapVertex(capCache[outerOffset + j], cutPoints[j], 1, t);
+  for (let r = 0; r < capRows; r++) for (let j = 0; j < columns; j++) {
+    const k = (j + 1) % columns;
+    const a = capCache[r * columns + j], b = capCache[r * columns + k];
+    const c = capCache[(r + 1) * columns + j], d = capCache[(r + 1) * columns + k];
+    if (r) appendLiquidTriangle(a, b, c);
+    appendLiquidTriangle(b, d, c);
+  }
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  surface seam
+  // ═══════════════════════════════════════════════════════════════════
+
+  for (let j = 0; j < columns; j++) {
+    const a = capCache[capRows * columns + j];
+    const b = capCache[capRows * columns + (j + 1) % columns];
+    const start = selected[j], end = j + 1 < columns ? selected[j + 1] : count;
+    for (let k = start; k < end; k++) {
+      appendLiquidTriangle(a, capCache[outerOffset + (k + 1) % count], capCache[outerOffset + k]);
+    }
+    appendLiquidTriangle(a, b, capCache[outerOffset + end % count]);
+  }
+  liquidGeo.setDrawRange(0, liquidVertexCount);
+  for (const attribute of [liquidGeo.attributes.position, liquidGeo.attributes.normal]) {
+    attribute.clearUpdateRanges();
+    attribute.addUpdateRange(0, liquidVertexCount * 3);
+    attribute.needsUpdate = true;
+  }
+  uOpticalLevel.value = uLevel.value;
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  air bubbles
+// ═══════════════════════════════════════════════════════════════════
+
+const bubbleGeo = new THREE.SphereGeometry(1, 12, 8);
+const bubbleMat = new THREE.MeshPhysicalNodeMaterial({
+  color: 0xf8ffe7, metalness: 0, roughness: 0.06,
+  transparent: true, opacity: 0.28, depthWrite: false,
+});
+const bubbles = new THREE.InstancedMesh(bubbleGeo, bubbleMat, 20);
+const bubbleStates = Array.from({ length: 20 }, (_, i) => ({
+  x: Math.sin(i * 12.9898) * 0.34, z: Math.cos(i * 7.233) * 0.34,
+  y: -0.66 + (i / 20) * 0.48, size: 0.003 + (i % 5) * 0.0014,
+  speed: 0.025 + (i % 7) * 0.005,
+}));
+const bubbleDummy = new THREE.Object3D();
+bubbles.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+bubbles.frustumCulled = false;
+liquidRoot.add(bubbles);
+function updateBubbles(dt, t) {
+  bubbles.visible = liquidParams.bubbles;
+  for (let i = 0; i < bubbleStates.length; i++) {
+    const b = bubbleStates[i];
+    b.y += dt * b.speed;
+    const x = b.x + Math.sin(t * 1.2 + i) * 0.008, top = surfaceHeightCPU(x, b.z, t) - 0.025;
+    if (b.y > top) b.y = Math.min(-0.64, top - 0.1);
+    bubbleDummy.position.set(x, b.y, b.z);
+    bubbleDummy.scale.setScalar(b.size);
+    bubbleDummy.updateMatrix();
+    bubbles.setMatrixAt(i, bubbleDummy.matrix);
+  }
+  bubbles.instanceMatrix.needsUpdate = true;
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  native color controls
+// ═══════════════════════════════════════════════════════════════════
+
+function addNativeColorPicker(folder, label, initialHex, onChange) {
+  const blade = folder.addBlade({
+    view: 'text',
+    label: label,
+    parse: (v) => v,
+    stringify: (v) => v,
+    value: initialHex,
+  });
+  requestAnimationFrame(() => {
+    const textInput = blade.element.querySelector('input[type="text"]');
+    if (!textInput) return;
+    const colorInput = document.createElement('input');
+    colorInput.type = 'color';
+    colorInput.value = initialHex;
+    colorInput.classList.add('native-color-input');
+    colorInput.addEventListener('input', (e) => {
+      const hex = e.target.value;
+      const r = parseInt(hex.slice(1, 3), 16) / 255;
+      const g = parseInt(hex.slice(3, 5), 16) / 255;
+      const b = parseInt(hex.slice(5, 7), 16) / 255;
+      onChange(r, g, b);
+    });
+    textInput.replaceWith(colorInput);
+  });
+  return blade;
+}
+
+const params = {
+  roughness: material.roughness,
+  transmission: material.transmission,
+  thickness: material.thickness,
+  ior: material.ior,
+  iridescence: material.iridescence,
+  specularIntensity: material.specularIntensity,
+  attenuationDistance: material.attenuationDistance,
+};
+const pane = new Pane({ container: document.getElementById('pane-container'), title: 'Controls', expanded: false });
+pane.addBinding(params, 'roughness', { min: 0, max: 1, step: 0.01 })
+  .on('change', (ev) => { material.roughness = ev.value; });
+pane.addBinding(params, 'transmission', { min: 0, max: 1, step: 0.01 })
+  .on('change', (ev) => { material.transmission = ev.value; });
+pane.addBinding(params, 'thickness', { min: 0, max: 4, step: 0.05 })
+  .on('change', (ev) => { material.thickness = ev.value; });
+pane.addBinding(params, 'ior', { min: 1, max: 2.333, step: 0.01 })
+  .on('change', (ev) => { material.ior = ev.value; });
+pane.addBinding(params, 'iridescence', { min: 0, max: 1, step: 0.01 })
+  .on('change', (ev) => { material.iridescence = ev.value; });
+pane.addBinding(params, 'specularIntensity', { min: 0, max: 1, step: 0.01, label: 'specular' })
+  .on('change', (ev) => { material.specularIntensity = ev.value; });
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  glass attenuation
+// ═══════════════════════════════════════════════════════════════════
+
+pane.addBinding(params, 'attenuationDistance', { min: 0.05, max: 10, step: 0.05, label: 'attenuation' })
+  .on('change', (ev) => { material.attenuationDistance = ev.value; });
+addNativeColorPicker(pane, 'color', '#' + material.color.getHexString(),
+  (r, g, b) => { material.color.setRGB(r, g, b, THREE.SRGBColorSpace); });
+addNativeColorPicker(pane, 'attenuationColor', '#' + material.attenuationColor.getHexString(),
+  (r, g, b) => { material.attenuationColor.setRGB(r, g, b, THREE.SRGBColorSpace); });
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  shape controls
+// ═══════════════════════════════════════════════════════════════════
+
+const shapeParams = { shape: 'dodecahedron', round: ROUND };
+const shapeFolder = pane.addFolder({ title: 'shape', expanded: false });
+
+function rebuildShell() {
+  const old = ball.geometry;
+  ball.geometry = makeShellGeometry(shapeParams.shape, shapeParams.round);
+  old.dispose();
+  rebuildLiquidBounds();
+}
+
+shapeFolder.addBinding(shapeParams, 'shape', {
+  options: { dodecahedron: 'dodecahedron', icosahedron: 'icosahedron' },
+}).on('change', rebuildShell);
+shapeFolder.addBinding(shapeParams, 'round', { min: 0, max: 1, step: 0.01, label: 'edge round' })
+  .on('change', (ev) => { ROUND = ev.value; rebuildShell(); });
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  liquid controls
+// ═══════════════════════════════════════════════════════════════════
+
+const liquidParams = {
+  show: true, opacity: 0.71, fill: FILL, absorption: 1.15,
+  roughness: liquidMaterial.roughness, ior: liquidMaterial.ior,
+  meniscus: 0.018, wobbleGain: 2.5, bubbles: true,
+  scattering: uScatterDensity.value, scatterSpread: uScatterSpread.value,
+};
+const liqFolder = pane.addFolder({ title: 'liquid' });
+liqFolder.addBinding(liquidParams, 'show').on('change', e => { liquidShown = e.value; });
+liqFolder.addBinding(liquidParams, 'opacity', { min: 0, max: 1, step: 0.01 })
+  .on('change', e => { uLiquidOpacity.value = e.value; });
+liqFolder.addBinding(liquidParams, 'fill', { min: 0.2, max: 0.7, step: 0.01 })
+  .on('change', e => { uLevel.value = -LIQ_R + 2 * LIQ_R * e.value; });
+liqFolder.addBinding(liquidParams, 'absorption', { min: 0.1, max: 4, step: 0.01 })
+  .on('change', e => { liquidMaterial.attenuationDistance = 1 / e.value; });
+liqFolder.addBinding(liquidParams, 'scattering', { min: 0, max: 3, step: 0.05, label: 'SSS density' })
+  .on('change', e => { uScatterDensity.value = e.value; });
+liqFolder.addBinding(liquidParams, 'scatterSpread', { min: 0.1, max: 0.9, step: 0.01, label: 'SSS spread' })
+  .on('change', e => { uScatterSpread.value = e.value; });
+liqFolder.addBinding(liquidParams, 'roughness', { min: 0.015, max: 0.3, step: 0.005 })
+  .on('change', e => { liquidMaterial.roughness = e.value; });
+liqFolder.addBinding(liquidParams, 'ior', { min: 1.25, max: 1.5, step: 0.001 })
+  .on('change', e => { liquidMaterial.ior = e.value; });
+liqFolder.addBinding(liquidParams, 'meniscus', { min: 0, max: 0.045, step: 0.001 });
+liqFolder.addBinding(liquidParams, 'wobbleGain', { min: 0, max: 3, step: 0.05, label: 'wobble gain' });
+liqFolder.addBinding(liquidParams, 'bubbles');
+addNativeColorPicker(liqFolder, 'absorption tint', '#' + liquidMaterial.attenuationColor.getHexString(),
+  (r, g, b) => { liquidMaterial.attenuationColor.setRGB(r, g, b, THREE.SRGBColorSpace); });
+
+addNativeColorPicker(liqFolder, 'SSS tint', '#' + uScatterColor.value.getHexString(),
+  (r, g, b) => { uScatterColor.value.setRGB(r, g, b, THREE.SRGBColorSpace); });
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  environment settings
+// ═══════════════════════════════════════════════════════════════════
+
+const envParams = {
+  rotY: -100,
+  rotX: 0,
+  linked: true,
+  bgIntensity: 1,
+  envIntensity: 1,
+  blur: 0.06,
+};
+
+function applyEnvRotation() {
+  const y = THREE.MathUtils.degToRad(envParams.rotY);
+  const x = THREE.MathUtils.degToRad(envParams.rotX);
+  liquidScene.backgroundRotation.set(x, y, 0);
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  environment rotation
+  // ═══════════════════════════════════════════════════════════════════
+
+  if (envParams.linked) { scene.environmentRotation.set(x, y, 0); liquidScene.environmentRotation.set(x, y, 0); }
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  ripple impulses
+// ═══════════════════════════════════════════════════════════════════
+
+const MAX = 12;
+const impPos = []; for (let i = 0; i < MAX; i++) impPos.push(new THREE.Vector3());
+const impAge = new Array(MAX).fill(99);
+const impStr = new Array(MAX).fill(0);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  shared deformation
+// ═══════════════════════════════════════════════════════════════════
+
+const activeGlassRipples = [];
+const glassRipplePool = Array.from({length: MAX}, () => ({x:0,y:0,z:0,radius:0,phase:0,energy:0}));
+function prepareGlassRipples() {
+  activeGlassRipples.length = 0;
+  for (let i = 0; i < MAX; i++) {
+    if (!impStr[i] || impAge[i] > 5) continue;
+    const wave = glassRipplePool[i];
+    wave.x = impPos[i].x; wave.y = impPos[i].y; wave.z = impPos[i].z;
+    wave.radius = impAge[i] * uRipSpeed.value; wave.phase = impAge[i] * 11;
+    wave.energy = Math.exp(-impAge[i] * uRipDecay.value) * impStr[i];
+    activeGlassRipples.push(wave);
+  }
+}
+function shellDisplacement(x, y, z) {
+  let total = 0;
+  const width = uRipWidth.value, frequency = uRipFreq.value;
+  for (const wave of activeGlassRipples) {
+    const dx = x - wave.x, dy = y - wave.y, dz = z - wave.z;
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz), front = dist - wave.radius;
+    total += Math.cos(dist * frequency - wave.phase) * Math.exp(-front * front * width) * wave.energy;
+  }
+  return 0.12 * Math.tanh(total * uWobble.value / 0.12);
+}
+function updateShellGeometry(prepared = false) {
+  if (!prepared) prepareGlassRipples();
+  const p = ball.geometry.attributes.position;
+  for (let i = 0; i < shellRestPositions.length; i += 3) {
+    const x = shellRestPositions[i], y = shellRestPositions[i + 1], z = shellRestPositions[i + 2];
+    const displacement = shellDisplacement(x, y, z);
+    p.array[i] = x + shellRadialDirections[i] * displacement;
+    p.array[i + 1] = y + shellRadialDirections[i + 1] * displacement;
+    p.array[i + 2] = z + shellRadialDirections[i + 2] * displacement;
+    innerPositions[i] = p.array[i] * INNER_SCALE;
+    innerPositions[i + 1] = p.array[i + 1] * INNER_SCALE;
+    innerPositions[i + 2] = p.array[i + 2] * INNER_SCALE;
+  }
+  p.needsUpdate = true;
+  ball.geometry.computeVertexNormals();
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  ripple normals
+// ═══════════════════════════════════════════════════════════════════
+
+const uPos = uniformArray(impPos), uAge = uniformArray(impAge), uStr = uniformArray(impStr);
+const glassGradient = Fn(([p]) => {
+  const total = float(0).toVar(), gradient = vec3(0).toVar();
+  Loop({ start: int(0), end: int(MAX), type: 'int' }, ({ i }) => {
+    const age = uAge.element(i), strength = uStr.element(i);
+    If(age.lessThanEqual(5).and(strength.notEqual(0)), () => {
+      const delta = p.sub(uPos.element(i));
+      const distance = length(delta).max(0.000001);
+      const front = distance.sub(age.mul(uRipSpeed));
+      const phase = distance.mul(uRipFreq).sub(age.mul(11));
+      const envelope = exp(front.mul(front).mul(uRipWidth.negate()))
+        .mul(exp(age.mul(uRipDecay.negate()))).mul(strength);
+      const cosine = cos(phase);
+      total.addAssign(cosine.mul(envelope));
+      const derivative = sin(phase).mul(uRipFreq.negate())
+        .sub(front.mul(uRipWidth).mul(2).mul(cosine)).mul(envelope).div(distance);
+      gradient.addAssign(delta.mul(derivative));
+    });
+  });
+  const elastic = total.mul(uWobble).div(0.12).tanh();
+  return gradient.mul(float(1).sub(elastic.mul(elastic))).mul(uWobble);
+});
+const glassObjectNormal = Fn(() => {
+  const p = attribute('wobbleBasePosition', 'vec3');
+  const baseNormal = attribute('wobbleBaseNormal', 'vec3');
+  return normalize(baseNormal.sub(glassGradient(p).mul(uNormalAmt)));
+})().toVarying('glassElasticNormal');
+material.normalNode = transformNormalToView(normalize(glassObjectNormal));
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  pointer interaction
+// ═══════════════════════════════════════════════════════════════════
+
+const raycaster = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  hover proxy
+// ═══════════════════════════════════════════════════════════════════
+
+const interactionSphere = new THREE.Sphere(new THREE.Vector3(), RADIUS);
+const pointerHit = new THREE.Vector3();
+const pointerLocal = new THREE.Vector3();
+const previousLocal = new THREE.Vector3();
+let prev = null, last = 0, dragging = false;
+
+function spawn(local, strength) {
+  let slot = 0, oldest = -1;
+  for (let i = 0; i < MAX; i++) if (impAge[i] > oldest) { oldest = impAge[i]; slot = i; }
+  impPos[slot].copy(local);
+  impAge[slot] = 0;
+  impStr[slot] = strength;
+}
+
+function onMove(e) {
+  if (performance.now() - last < 30) return;
+  ndc.x = (e.clientX / window.innerWidth) * 2 - 1;
+  ndc.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(ndc, camera);
+  ball.updateWorldMatrix(true, false);
+  const hit = raycaster.ray.intersectSphere(interactionSphere, pointerHit);
+  if (hit) {
+    const local = ball.worldToLocal(pointerLocal.copy(hit));
+    const now = performance.now();
+    if (now - last > 30) {
+      let s = 1.0;
+      if (prev) {
+        s = THREE.MathUtils.clamp(0.5 + local.distanceTo(prev) * 16, 0.4, 1.8);
+      }
+      spawn(local, s);
+      last = now;
+      prev = previousLocal.copy(local);
+    }
+  } else { prev = null; }
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  pointer events
+// ═══════════════════════════════════════════════════════════════════
+
+renderer.domElement.addEventListener('pointermove', onMove, { passive: true });
+renderer.domElement.addEventListener('pointerdown', (e) => { dragging = true; onMove(e); }, { passive: true });
+window.addEventListener('pointerup',   () => { dragging = false; }, { passive: true });
+window.addEventListener('pointercancel', () => { dragging = false; }, { passive: true });
+renderer.domElement.addEventListener('pointerleave', () => { dragging = false; prev = null; }, { passive: true });
+window.addEventListener('blur', () => { dragging = false; prev = null; });
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  nested refraction
+// ═══════════════════════════════════════════════════════════════════
+
+const bufferSize = renderer.getDrawingBufferSize(new THREE.Vector2());
+const liquidTarget = new THREE.RenderTarget(bufferSize.x, bufferSize.y, {
+  type: THREE.HalfFloatType, samples: 2,
+});
+const emptyTarget = new THREE.RenderTarget(bufferSize.x, bufferSize.y, {
+  type: THREE.HalfFloatType,
+});
+const maskTarget = new THREE.RenderTarget(bufferSize.x, bufferSize.y, {
+  type: THREE.UnsignedByteType, samples: 2,
+});
+const maskScene = new THREE.Scene();
+maskScene.background = new THREE.Color(0x000000);
+const maskMaterial = new THREE.MeshBasicNodeMaterial({ color: 0xffffff, toneMapped: false });
+const maskBall = new THREE.Mesh(ball.geometry, maskMaterial);
+maskScene.add(maskBall);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  liquid mask
+// ═══════════════════════════════════════════════════════════════════
+
+const containedOpacity = texture(maskTarget.texture, screenUV).r.mul(uLiquidOpacity);
+scene.backgroundNode = mix(texture(emptyTarget.texture, screenUV),
+  texture(liquidTarget.texture, screenUV), containedOpacity);
+const scenePass = pass(scene, camera);
+const vignette = float(1).sub(screenUV.sub(0.5).length().mul(0.10));
+const postProcessing = new RenderPipeline(renderer);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  output
+// ═══════════════════════════════════════════════════════════════════
+
+postProcessing.outputNode = vec4(scenePass.rgb.mul(vignette), 1);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  animation loop
+// ═══════════════════════════════════════════════════════════════════
+
+const timer = new THREE.Timer();
+let previousWobbleActive = true;
+let lastMesh = null, lastLevel = NaN, lastMeniscus = NaN, lastGain = NaN, lastShading = NaN;
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  profiling
+// ═══════════════════════════════════════════════════════════════════
+
+const profileEnabled = new URLSearchParams(location.search).has('profile');
+const profileFrames = new Float64Array(120), profileCPU = new Float64Array(120);
+let profileIndex = 0, profilePreviousTime = 0, activeProfileIndex = 0;
+const activeProfileFrames = new Float64Array(120), activeProfileCPU = new Float64Array(120);
+let resizePending = false;
+function animate() {
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  drawing buffer size
+  // ═══════════════════════════════════════════════════════════════════
+
+  const pixelRatio = renderer.getPixelRatio();
+  const frameWidth = Math.floor(window.innerWidth * pixelRatio);
+  const frameHeight = Math.floor(window.innerHeight * pixelRatio);
+  if (resizePending || liquidTarget.width !== frameWidth || liquidTarget.height !== frameHeight
+    || renderer.domElement.width !== frameWidth || renderer.domElement.height !== frameHeight) {
+    resizePending = false;
+    resizeViewport();
+  }
+  const frameStart = profileEnabled ? performance.now() : 0;
+  const dt = Math.min(timer.update().getDelta(), 0.05);
+  for (let i = 0; i < MAX; i++) impAge[i] += dt;
+
+  simulationTime += dt;
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  geometry update
+  // ═══════════════════════════════════════════════════════════════════
+
+  prepareGlassRipples();
+  const wobbleActive = activeGlassRipples.length > 0;
+  const settingsChanged = ball.geometry !== lastMesh || uLevel.value !== lastLevel
+    || liquidParams.meniscus !== lastMeniscus || liquidParams.wobbleGain !== lastGain || uNormalAmt.value !== lastShading;
+  if (wobbleActive || previousWobbleActive || settingsChanged) {
+    updateShellGeometry(true);
+    vesselColumns.rebuild(innerPositions, shellIndices);
+    updateLiquidGeometry(simulationTime);
+    lastMesh = ball.geometry; lastLevel = uLevel.value; lastMeniscus = liquidParams.meniscus;
+    lastGain = liquidParams.wobbleGain; lastShading = uNormalAmt.value;
+  }
+  previousWobbleActive = wobbleActive;
+  updateBubbles(dt, simulationTime);
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  auto rotation
+  // ═══════════════════════════════════════════════════════════════════
+
+  if (!dragging) {
+    ball.rotation.y += dt * 0.45;
+  }
+  controls.update();
+  liquidRoot.rotation.copy(ball.rotation);
+
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  environment render
+  // ═══════════════════════════════════════════════════════════════════
+
+  liquidRoot.visible = false;
+  renderer.setRenderTarget(emptyTarget);
+  renderer.render(liquidScene, camera);
+  liquidRoot.visible = liquidShown;
+  renderer.setRenderTarget(liquidTarget);
+  renderer.render(liquidScene, camera);
+  maskBall.geometry = ball.geometry;
+  maskBall.rotation.copy(ball.rotation);
+  renderer.setRenderTarget(maskTarget);
+  renderer.render(maskScene, camera);
+  renderer.setRenderTarget(null);
+  postProcessing.render();
+  if (profileEnabled) {
+    const slot = profileIndex % profileFrames.length;
+    profileFrames[slot] = profilePreviousTime ? frameStart - profilePreviousTime : 0;
+    profileCPU[slot] = performance.now() - frameStart;
+    if (wobbleActive) {
+      const activeSlot = activeProfileIndex % 120;
+      activeProfileFrames[activeSlot] = profileFrames[slot];
+      activeProfileCPU[activeSlot] = profileCPU[slot];
+      activeProfileIndex++;
+      if (activeProfileIndex >= 60 && activeProfileIndex % 30 === 0) {
+        const count = Math.min(120, activeProfileIndex);
+        const times = Array.from(activeProfileFrames.subarray(0,count)).sort((a,b) => a-b);
+        const cpuTimes = Array.from(activeProfileCPU.subarray(0,count)).sort((a,b) => a-b);
+        renderer.domElement.dataset.activeFrameMedianMs = times[Math.floor(count*.5)].toFixed(2);
+        renderer.domElement.dataset.activeFrameP95Ms = times[Math.floor(count*.95)].toFixed(2);
+        renderer.domElement.dataset.activeCpuMedianMs = cpuTimes[Math.floor(count*.5)].toFixed(2);
+        renderer.domElement.dataset.activeCpuP95Ms = cpuTimes[Math.floor(count*.95)].toFixed(2);
+      }
+    }
+    profilePreviousTime = frameStart; profileIndex++;
+    if (profileIndex >= 120 && profileIndex % 60 === 0) {
+      const frames = Array.from(profileFrames).sort((a,b) => a-b);
+      const cpu = Array.from(profileCPU).sort((a,b) => a-b);
+      renderer.domElement.dataset.frameMedianMs = frames[60].toFixed(2);
+      renderer.domElement.dataset.frameP95Ms = frames[114].toFixed(2);
+      renderer.domElement.dataset.cpuMedianMs = cpu[60].toFixed(2);
+      renderer.domElement.dataset.cpuP95Ms = cpu[114].toFixed(2);
+    }
+  }
+  requestAnimationFrame(animate);
+}
+
+async function init() {
+  await renderer.init();
+  pmremGen = new THREE.PMREMGenerator(renderer);
+  await loadEnvironment();
+  rebuildLiquidBounds();
+  applyEnvRotation();
+  liquidScene.backgroundBlurriness = envParams.blur;
+  timer.connect(document);
+  timer.update();
+  animate();
+  document.getElementById('backend').textContent = 'THREE r' + THREE.REVISION + ' · WEBGPU · TSL';
+  loaderElement.classList.add('hidden');
+}
+init().catch(showRendererError);
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  viewport resize
+// ═══════════════════════════════════════════════════════════════════
+
+function resizeViewport() {
+  renderer.setRenderTarget(null);
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.getDrawingBufferSize(bufferSize);
+  liquidTarget.setSize(bufferSize.x, bufferSize.y);
+  emptyTarget.setSize(bufferSize.x, bufferSize.y);
+  maskTarget.setSize(bufferSize.x, bufferSize.y);
+  scenePass.setSize(bufferSize.x, bufferSize.y);
+}
+window.addEventListener('resize', () => { resizePending = true; });
+</script>
+</body>
+</html>
