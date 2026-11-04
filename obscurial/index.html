@@ -1,0 +1,948 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Obscurial.</title>
+<link rel="stylesheet" href="./styles/styles.css" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/",
+    "tweakpane": "https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.min.js"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="pane-container"></div>
+<div id="vignette"></div>
+<div id="title-block">
+  <span id="title-eyebrow">Tinker Day #51</span>
+  <span id="title-headline">Obscurial.</span>
+  <p style="font-size: 14px;">
+    Mousedown &amp; Move to<br>tear it open<br>Right-drag to orbit<br><br>
+    Open controls to adjust<br>the flow and the pulse!<br><br>
+    <span style="font-size: 12px;">WebGPU · three.js · TSL</span><br />
+  </p>
+</div>
+<footer><a id="nav-prev-all" href="https://dasprinzip.com/tinker/index.html">&#8593; Checkout all days</a><a id="nav-prev" href="https://dasprinzip.com/tinker/day50/"><br>&larr; The Day Before.</a></footer>
+<div id="loader"><div class="spinner"></div><div class="loading-text">loading<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></div></div>
+<div id="fps"></div>
+<script>
+  const __fail = (msg) => {
+    const l = document.getElementById('loader');
+    if (!l) return;
+    l.classList.remove('hidden');
+    const sp = l.querySelector('.spinner'); if (sp) sp.style.display = 'none';
+    const t = l.querySelector('.loading-text');
+    if (t) t.textContent = 'error — ' + msg;
+  };
+  window.addEventListener('error', e => __fail(e.message || 'script error'));
+  window.addEventListener('unhandledrejection', e =>
+    __fail(e.reason && e.reason.message ? e.reason.message : String(e.reason)));
+</script>
+
+
+<script type="module">
+import * as THREE from 'three/webgpu';
+import {
+	Fn, uniform, instanceIndex, instancedArray, vec2, vec3, vec4, float, int, uint, uvec3, uv,
+	length, normalize, dot, cross, mix, smoothstep, exp, max, sqrt, fract, clamp, floor,
+	mx_noise_vec3, mx_noise_float, mx_fractal_noise_float, hash, time, sin, cos, abs, sign, pow, mod,
+	positionWorld, positionView, normalView, normalWorld, step, min, reflector, If, Loop, atomicAdd, atomicLoad, atomicStore,
+	textureStore, texture3D, screenUV, screenCoordinate, pass
+} from 'three/tsl';
+import { bloom } from 'three/addons/tsl/display/BloomNode.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const BUILD = 'v2.6-obscurial';
+console.log( BUILD );
+
+// ═══════════════════════════════════════════════════════════════════
+//  renderer / scene / camera
+// ═══════════════════════════════════════════════════════════════════
+
+const renderer = new THREE.WebGPURenderer( { canvas: document.getElementById( 'c' ), antialias: false } );
+renderer.setPixelRatio( Math.min( devicePixelRatio, 2 ) );
+renderer.setSize( Math.max( innerWidth, 8 ), Math.max( innerHeight, 8 ) );
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFShadowMap;
+
+try { await renderer.init(); }
+catch ( e ) {
+	throw new Error( 'this browser could not start WebGPU or WebGL2' );
+}
+
+const isWebGL = renderer.backend.isWebGLBackend === true;
+const isMobile = matchMedia( '(pointer: coarse)' ).matches;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color( 0x050506 );
+scene.fog = new THREE.FogExp2( 0x050506, 0.035 );
+
+const camera = new THREE.PerspectiveCamera( 38, innerWidth / innerHeight, 0.05, 50 );
+const fitDistance = () => ( innerWidth / innerHeight < 0.8 ? 5.4 : 4.1 );
+camera.position.set( 0.0, 0.35, fitDistance() );
+{ const qc = new URLSearchParams( location.search ).get( 'cam' ); if ( qc ) camera.position.fromArray( qc.split( ',' ).map( Number ) ); }
+
+const controls = new OrbitControls( camera, renderer.domElement );
+controls.enableDamping = true;
+controls.enablePan = false;
+controls.minDistance = 2.2;
+controls.maxDistance = 7.5;
+controls.maxPolarAngle = 1.78;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.35;
+controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
+controls.touches = { ONE: null, TWO: THREE.TOUCH.DOLLY_ROTATE };
+
+// ═══════════════════════════════════════════════════════════════════
+//  particle data
+// ═══════════════════════════════════════════════════════════════════
+
+const qn = parseInt( new URLSearchParams( location.search ).get( 'n' ) || '0', 10 );
+const COUNT = qn > 0 ? qn : isWebGL ? 131072 : ( isMobile ? 262144 : 1048576 );
+
+const posArr  = new Float32Array( COUNT * 4 );
+const velArr  = new Float32Array( COUNT * 4 );
+const homeArr = new Float32Array( COUNT * 4 );
+
+for ( let i = 0; i < COUNT; i ++ ) {
+
+	let x, y, z, l;
+	do { x = Math.random() * 2 - 1; y = Math.random() * 2 - 1; z = Math.random() * 2 - 1; l = x * x + y * y + z * z; } while ( l > 1 || l < 1e-4 );
+	l = Math.sqrt( l ); x /= l; y /= l; z /= l;
+
+	let r;
+	if ( Math.random() < 0.72 ) r = 0.80 + 0.20 * Math.pow( Math.random(), 0.45 );
+	else r = 0.78 * Math.cbrt( Math.random() );
+
+	const k = i * 4;
+	homeArr[ k ] = x * r; homeArr[ k + 1 ] = y * r; homeArr[ k + 2 ] = z * r; homeArr[ k + 3 ] = Math.random();
+	posArr[ k ] = x * r; posArr[ k + 1 ] = y * r; posArr[ k + 2 ] = z * r; posArr[ k + 3 ] = 1;
+
+}
+
+const posB  = instancedArray( posArr,  'vec4' );
+const velB  = instancedArray( velArr,  'vec4' );
+const homeB = instancedArray( homeArr, 'vec4' );
+
+// ═══════════════════════════════════════════════════════════════════
+//  parameters / uniforms
+// ═══════════════════════════════════════════════════════════════════
+
+const P = {
+	turbulence: 0.7, flowFreq: 1.35, flowSpeed: 0.11, lump: 0.2, lumpFreq: 1.25,
+	spring: 5.2, damping: 3.2,
+	radius: 0.30, push: 4.0, swirl: 14.35, dive: - 10.0, drag: 4.62, hover: 0.35, autoStir: true,
+	size: 0.0068, alpha: 0.82, grey: '#9a8f8d', ember: '#ff3514', coreGain: 2.0,
+	shellIn: 0.70, shellOut: 0.86, spill: 0.55, fall: 3.0,
+	bloomStrength: 0.85, bloomRadius: 0.55, bloomThreshold: 0.55, exposure: 1.0,
+	shadows: true, veil: 0.85, extinction: 6.0, redExtinction: 3.5, sun: 1.25, ambient: 0.07,
+	haze: ! isMobile, hazeGain: 1.6, hazeDensity: 0.6,
+	environment: true, emberLight: 10, moonLight: 70, reflections: ! isMobile, fog: 0.035, shafts: 1.0, dust: 1.0,
+	pulse: true, pulseMin: 3.0, pulseMax: 7.0, pulseGain: 7.22, pulseTint: 0.96, pulsePierce: 0.95, pulseBloom: 1.39, pulseWander: 0.5,
+};
+
+const uTime = uniform( 0 ), uDt = uniform( 1 / 60 );
+const uTurb = uniform( P.turbulence ), uFreq = uniform( P.flowFreq ), uFlowSpeed = uniform( P.flowSpeed );
+const uLump = uniform( P.lump ), uLumpFreq = uniform( P.lumpFreq );
+const uSpring = uniform( P.spring ), uDamp = uniform( P.damping );
+const uRayO = uniform( new THREE.Vector3( 0, 0, 10 ) ), uRayD = uniform( new THREE.Vector3( 0, 0, - 1 ) );
+const uPtr = uniform( 0 ), uPtrVel = uniform( new THREE.Vector3() );
+const uRad = uniform( P.radius ), uPush = uniform( P.push ), uSwirl = uniform( P.swirl ), uDive = uniform( P.dive ), uDrag = uniform( P.drag );
+
+const uSize = uniform( P.size ), uAlpha = uniform( P.alpha );
+const uGrey = uniform( new THREE.Color( P.grey ) ), uEmber = uniform( new THREE.Color( P.ember ) );
+const uCoreGain = uniform( P.coreGain ), uShellIn = uniform( P.shellIn ), uShellOut = uniform( P.shellOut );
+const uSpill = uniform( P.spill ), uFall = uniform( P.fall );
+const uLightDir = uniform( new THREE.Vector3( - 0.35, 0.85, 0.4 ).normalize() );
+const uRedPos = uniform( new THREE.Vector3( 0.05, - 0.38, 0.1 ) );
+const uPulse = uniform( 0 ), uPulseGain = uniform( P.pulseGain ), uPulseTint = uniform( P.pulseTint ), uPulsePierce = uniform( P.pulsePierce );
+const uExt = uniform( P.extinction ), uExtRed = uniform( P.redExtinction ), uSun = uniform( P.sun ), uAmb = uniform( P.ambient );
+const uViewOcc = uniform( P.veil ), uShadowMix = uniform( 1 ), uHazeGain = uniform( P.hazeGain ), uHazeDens = uniform( P.hazeDensity );
+const uInvVP = uniform( new THREE.Matrix4() ), uCamPos = uniform( new THREE.Vector3() );
+
+// ═══════════════════════════════════════════════════════════════════
+//  curl noise
+// ═══════════════════════════════════════════════════════════════════
+
+const curl = Fn( ( [ p ] ) => {
+
+	const e = 0.09;
+	const n  = mx_noise_vec3( p );
+	const nx = mx_noise_vec3( p.add( vec3( e, 0, 0 ) ) ).sub( n );
+	const ny = mx_noise_vec3( p.add( vec3( 0, e, 0 ) ) ).sub( n );
+	const nz = mx_noise_vec3( p.add( vec3( 0, 0, e ) ) ).sub( n );
+	return vec3( ny.z.sub( nz.y ), nz.x.sub( nx.z ), nx.y.sub( ny.x ) ).div( e );
+
+} );
+
+// ═══════════════════════════════════════════════════════════════════
+//  particle simulation
+// ═══════════════════════════════════════════════════════════════════
+
+const update = Fn( () => {
+
+	const P4 = posB.element( instanceIndex );
+	const V4 = velB.element( instanceIndex );
+	const H4 = homeB.element( instanceIndex );
+
+	const p = P4.xyz.toVar();
+	const v = V4.xyz.toVar();
+	const h = H4.xyz;
+
+	const lq = h.mul( uLumpFreq ).add( vec3( 3.1, uTime.mul( 0.06 ), 7.7 ) );
+	const lump = mx_noise_float( lq ).add( mx_noise_float( lq.mul( 2.7 ) ).mul( 0.45 ) );
+	const target = h.mul( lump.mul( uLump ).add( 1.0 ) );
+
+	const q = p.mul( uFreq ).add( vec3( uTime.mul( uFlowSpeed ), uTime.mul( uFlowSpeed ).mul( 0.6 ), 11.0 ) );
+	const flow = curl( q ).add( curl( q.mul( 2.3 ).add( 5.0 ) ).mul( 0.35 ) );
+	v.addAssign( flow.mul( uTurb ).mul( uDt ) );
+
+	v.addAssign( target.sub( p ).mul( uSpring ).mul( uDt ) );
+
+	const rel = p.sub( uRayO );
+	const along = max( dot( rel, uRayD ), 0.0 );
+	const d = rel.sub( uRayD.mul( along ) );
+	const dist = max( length( d ), 1e-4 );
+	const nrm = d.div( dist );
+	const f = exp( dist.mul( dist ).div( uRad.mul( uRad ) ).negate() ).mul( uPtr );
+	const kick = nrm.mul( uPush ).add( cross( uRayD, nrm ).mul( uSwirl ) ).add( uRayD.mul( uDive ) );
+	v.addAssign( kick.mul( f ).mul( uDt ) );
+	v.addAssign( uPtrVel.mul( f ).mul( uDrag ) );
+
+	v.mulAssign( exp( uDamp.mul( uDt ).negate() ) );
+	p.addAssign( v.mul( uDt ) );
+
+	P4.assign( vec4( p, P4.w ) );
+	V4.assign( vec4( v, 0.0 ) );
+
+} )().compute( COUNT );
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  density volume
+// ═══════════════════════════════════════════════════════════════════
+
+const VOL = ! isWebGL;
+const B = 1.9;
+const G = isMobile ? 64 : 96;
+const LG = isMobile ? 40 : 64;
+const SUN_STEPS = 12, RED_STEPS = 12, VIEW_STEPS = 10, HAZE_STEPS = isMobile ? 20 : 32;
+const toGrid = ( wp ) => wp.div( B * 2 ).add( 0.5 );
+
+let densTex = null, lightTex = null, volumePasses = [];
+
+if ( VOL ) {
+
+	const G3 = G * G * G;
+	const gridBuf = instancedArray( G3, 'uint' ).toAtomic();
+	const uDensNorm = uniform( ( 1048576 / COUNT ) / 20 * Math.pow( G / 96, 3 ) );
+
+	densTex = new THREE.Storage3DTexture( G, G, G );
+	densTex.type = THREE.HalfFloatType;
+	lightTex = new THREE.Storage3DTexture( LG, LG, LG );
+	lightTex.type = THREE.HalfFloatType;
+
+	// ═══════════════════════════════════════════════════════════════════
+	//  clear grid
+	// ═══════════════════════════════════════════════════════════════════
+
+	const clearGrid = Fn( () => {
+		atomicStore( gridBuf.element( instanceIndex ), uint( 0 ) );
+	} )().compute( G3 );
+
+	// ═══════════════════════════════════════════════════════════════════
+	//  splat
+	// ═══════════════════════════════════════════════════════════════════
+
+	const splat = Fn( () => {
+		const g = toGrid( posB.element( instanceIndex ).xyz ).mul( G ).toVar();
+		If( g.x.greaterThanEqual( 0 ).and( g.y.greaterThanEqual( 0 ) ).and( g.z.greaterThanEqual( 0 ) )
+			.and( g.x.lessThan( G ) ).and( g.y.lessThan( G ) ).and( g.z.lessThan( G ) ), () => {
+			const c = uvec3( floor( g ) );
+			atomicAdd( gridBuf.element( c.x.add( c.y.mul( G ) ).add( c.z.mul( G * G ) ) ), uint( 1 ) );
+		} );
+	} )().compute( COUNT );
+
+	// ═══════════════════════════════════════════════════════════════════
+	//  blur
+	// ═══════════════════════════════════════════════════════════════════
+
+	const cellIndex = ( x, y, z ) => uint(
+		clamp( x, int( 0 ), int( G - 1 ) )
+			.add( clamp( y, int( 0 ), int( G - 1 ) ).mul( G ) )
+			.add( clamp( z, int( 0 ), int( G - 1 ) ).mul( G * G ) )
+	);
+
+	const blur = Fn( () => {
+		const i = instanceIndex;
+		const x = int( i.mod( G ) ).toVar(), y = int( i.div( G ).mod( G ) ).toVar(), z = int( i.div( G * G ) ).toVar();
+		const sum = float( 0 ).toVar();
+		for ( let dz = - 1; dz <= 1; dz ++ ) for ( let dy = - 1; dy <= 1; dy ++ ) for ( let dx = - 1; dx <= 1; dx ++ ) {
+			const w = ( dx === 0 ? 2 : 1 ) * ( dy === 0 ? 2 : 1 ) * ( dz === 0 ? 2 : 1 ) / 64;
+			const c = atomicLoad( gridBuf.element( cellIndex( x.add( dx ), y.add( dy ), z.add( dz ) ) ) );
+			sum.addAssign( float( c ).mul( w ) );
+		}
+		textureStore( densTex, uvec3( x, y, z ), vec4( sum.mul( uDensNorm ), 0, 0, 1 ) );
+	} )().compute( G3 );
+
+	// ═══════════════════════════════════════════════════════════════════
+	//  light transmittance
+	// ═══════════════════════════════════════════════════════════════════
+
+	const densAt = ( wp ) => texture3D( densTex, toGrid( wp ) ).level( 0 ).r;
+
+	const lightPass = Fn( () => {
+		const i = instanceIndex;
+		const x = i.mod( LG ), y = i.div( LG ).mod( LG ), z = i.div( LG * LG );
+		const wp = vec3( float( x ), float( y ), float( z ) ).add( 0.5 ).div( LG ).sub( 0.5 ).mul( B * 2 ).toVar();
+
+		const dsS = 1.7 / SUN_STEPS;
+		const accS = float( 0 ).toVar();
+		Loop( SUN_STEPS, ( { i: k } ) => {
+			accS.addAssign( densAt( wp.add( uLightDir.mul( float( k ).add( 0.5 ).mul( dsS ) ) ) ) );
+		} );
+		const tSun = exp( accS.mul( dsS ).mul( uExt ).negate() );
+
+		const toL = uRedPos.sub( wp ).toVar();
+		const dsR = length( toL ).div( RED_STEPS );
+		const accR = float( 0 ).toVar();
+		Loop( RED_STEPS, ( { i: k } ) => {
+			accR.addAssign( densAt( wp.add( toL.mul( float( k ).add( 0.5 ).div( RED_STEPS ) ) ) ) );
+		} );
+		const tRed = exp( accR.mul( dsR ).mul( uExtRed ).mul( uPulse.mul( uPulsePierce ).oneMinus() ).negate() );
+
+		const toC = normalize( uCamPos.sub( wp ) ).toVar();
+		const dsV = 2.2 / VIEW_STEPS;
+		const accV = float( 0 ).toVar();
+		Loop( VIEW_STEPS, ( { i: k } ) => {
+			accV.addAssign( densAt( wp.add( toC.mul( float( k ).add( 1.0 ).mul( dsV ) ) ) ) );
+		} );
+		const tView = exp( accV.mul( dsV ).mul( uExt ).negate() );
+
+		textureStore( lightTex, uvec3( x, y, z ), vec4( tSun, tRed, tView, 1 ) );
+	} )().compute( LG * LG * LG );
+
+	volumePasses = [ clearGrid, splat, blur, lightPass ];
+
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  particle material
+// ═══════════════════════════════════════════════════════════════════
+
+const material = new THREE.SpriteNodeMaterial( { transparent: true, depthWrite: true } );
+material.alphaTest = 0.12;
+
+const pAttr = posB.toAttribute().xyz;
+const hAttr = homeB.toAttribute();
+
+material.positionNode = pAttr;
+material.scaleNode = uSize.mul( hAttr.w.mul( 0.9 ).add( 0.55 ) );
+
+const colorNode = Fn( () => {
+
+	const hr = length( hAttr.xyz );
+	const core = smoothstep( uShellIn, uShellOut, hr ).oneMinus();
+
+	const L = VOL ? texture3D( lightTex, toGrid( pAttr ) ) : vec4( 1, 1, 1, 1 );
+	const tView = mix( float( 1 ), L.b, uShadowMix.mul( uViewOcc ) );
+	const tSun = mix( float( 1 ), L.r, uShadowMix );
+	const tRed = mix( float( 1 ), L.g, uShadowMix );
+
+	const N = normalize( pAttr );
+	const lam = dot( N, uLightDir ).mul( 0.5 ).add( 0.5 );
+	const grain = hAttr.w.mul( 0.35 ).add( 0.75 );
+	const ash = uGrey.mul( uAmb.add( lam.mul( 0.6 ).add( 0.4 ).mul( tSun ).mul( uSun ) ) ).mul( grain );
+
+	const glow = exp( length( pAttr.sub( uRedPos ) ).mul( uFall ).negate() );
+	const flare = uPulse.mul( uPulseGain ).add( 1.0 );
+	const tint = uPulse.mul( uPulseTint );
+	const ashT = mix( ash, ash.mul( vec3( 1.25, 0.42, 0.34 ) ), tint );
+	const lit = glow.mul( 0.6 ).add( 0.4 ).mul( tRed );
+	const emberC = mix( vec3( uEmber ), vec3( 1.0, 0.36, 0.14 ), uPulse.mul( 0.5 ) );
+	const crust = ashT.add( emberC.mul( glow.mul( uSpill ).mul( tRed ).mul( flare ) ) ).add( emberC.mul( lit.mul( tint ).mul( 0.45 ) ) );
+	const ember = emberC.mul( uCoreGain ).mul( glow.mul( 0.7 ).add( 0.3 ) ).mul( mix( float( 0.25 ), float( 1 ), tRed ) ).mul( grain ).mul( flare );
+
+	return mix( crust, ember, core ).mul( tView );
+
+} )();
+
+material.colorNode = colorNode;
+material.opacityNode = smoothstep( 0.5, 0.15, length( uv().sub( 0.5 ) ) ).mul( uAlpha );
+
+const particles = new THREE.Sprite( material );
+particles.count = COUNT;
+particles.frustumCulled = false;
+scene.add( particles );
+
+// ═══════════════════════════════════════════════════════════════════
+//  warehouse
+// ═══════════════════════════════════════════════════════════════════
+
+const ROOM = { x: 12, z: 9, floor: - 2.6, ceil: 6.4 };
+const env = new THREE.Group();
+scene.add( env );
+
+const uEmberLight = uniform( 1 ), uShaft = uniform( 1 ), uDust = uniform( 1 );
+
+// ═══════════════════════════════════════════════════════════════════
+//  bump mapping
+// ═══════════════════════════════════════════════════════════════════
+
+const bump = Fn( ( [ h, s ] ) => {
+	const p = positionView, n = normalView;
+	const dpdx = p.dFdx(), dpdy = p.dFdy();
+	const r1 = cross( dpdy, n ), r2 = cross( n, dpdx );
+	const det = dot( dpdx, r1 );
+	const grad = r1.mul( h.dFdx() ).add( r2.mul( h.dFdy() ) ).mul( sign( det ) );
+	return normalize( n.mul( abs( det ) ).sub( grad.mul( s ) ) );
+} );
+
+const fbm = ( p, o = 4 ) => mx_fractal_noise_float( p, o, 2.0, 0.5 );
+
+// ═══════════════════════════════════════════════════════════════════
+//  concrete floor
+// ═══════════════════════════════════════════════════════════════════
+
+const floorMat = new THREE.MeshStandardNodeMaterial();
+let reflEmissive = vec3( 0 );
+{
+	const fp = positionWorld.xz;
+	const stain = fbm( vec3( fp.mul( 0.32 ), 1.7 ), 5 );
+	const fine = mx_noise_float( vec3( fp.mul( 9.0 ), 3.3 ) );
+	const sx = fract( fp.x.div( 3.0 ).add( 100 ) ), sz = fract( fp.y.div( 3.0 ).add( 100 ) );
+	const seam = max( smoothstep( 0.012, 0.0, min( sx, sx.oneMinus() ) ), smoothstep( 0.012, 0.0, min( sz, sz.oneMinus() ) ) );
+	const ridge = abs( mx_noise_float( vec3( fp.mul( 1.6 ), 9.1 ) ).add( mx_noise_float( vec3( fp.mul( 7.0 ), 1.3 ) ).mul( 0.08 ) ) ).oneMinus();
+	const crack = smoothstep( 0.993, 0.999, ridge ).mul( smoothstep( - 0.1, 0.4, mx_noise_float( vec3( fp.mul( 0.4 ), 2.2 ) ) ) );
+	const wet = smoothstep( 0.16, 0.24, fbm( vec3( fp.mul( 0.16 ), 5.5 ), 3 ) ).toVar();
+	const oil = smoothstep( 0.35, 0.62, mx_noise_float( vec3( fp.mul( 0.5 ), 4.4 ) ) );
+
+	const base = mix( vec3( 0.20, 0.19, 0.175 ), vec3( 0.07, 0.066, 0.06 ), smoothstep( - 0.35, 0.45, stain ) )
+		.mul( fine.mul( 0.08 ).add( 0.95 ) );
+	const stained = mix( base, vec3( 0.14, 0.08, 0.045 ), oil.mul( 0.5 ) )
+		.mul( seam.mul( 0.55 ).oneMinus() ).mul( crack.mul( 0.75 ).oneMinus() );
+
+	floorMat.colorNode = stained.mul( mix( float( 1 ), float( 0.3 ), wet ) );
+	floorMat.roughnessNode = mix( fine.mul( 0.05 ).add( 0.88 ), float( 0.05 ), wet );
+	floorMat.metalnessNode = float( 0 );
+	floorMat.normalNode = bump( fine.mul( 0.15 ).sub( seam ).sub( crack ), mix( float( 0.02 ), float( 0.0 ), wet ) );
+
+	if ( ! isMobile ) {
+		const refl = reflector( { resolutionScale: 0.5 } );
+		refl.uvNode = refl.uvNode.add( vec2( mx_noise_float( vec3( fp.mul( 3.0 ), time.mul( 0.3 ) ) ), mx_noise_float( vec3( fp.mul( 3.0 ).add( 9 ), time.mul( 0.3 ) ) ) ).mul( 0.004 ) );
+		refl.target.rotateX( - Math.PI / 2 );
+		refl.target.position.y = ROOM.floor;
+		env.add( refl.target );
+		reflEmissive = refl.rgb.mul( wet ).mul( 0.45 );
+		floorMat.emissiveNode = reflEmissive;
+	}
+}
+const floorMesh = new THREE.Mesh( new THREE.PlaneGeometry( ROOM.x * 2, ROOM.z * 2 ), floorMat );
+floorMesh.rotation.x = - Math.PI / 2;
+floorMesh.position.y = ROOM.floor;
+floorMesh.receiveShadow = true;
+env.add( floorMesh );
+
+// ═══════════════════════════════════════════════════════════════════
+//  brick walls
+// ═══════════════════════════════════════════════════════════════════
+
+const wallMat = new THREE.MeshStandardNodeMaterial();
+{
+	const wp = positionWorld;
+	const sideX = step( 0.5, abs( normalWorld.x ) );
+	const wuv = mix( wp.xy, wp.zy, sideX ).add( vec2( 50, 10 ) );
+	const row = floor( wuv.y.div( 0.075 ) );
+	const bx = fract( wuv.x.div( 0.24 ).add( mod( row, 2 ).mul( 0.5 ) ) );
+	const by = fract( wuv.y.div( 0.075 ) );
+	const brickMask = smoothstep( 0.0, 0.04, bx ).mul( smoothstep( 1.0, 0.96, bx ) ).mul( smoothstep( 0.0, 0.13, by ) ).mul( smoothstep( 1.0, 0.87, by ) );
+	const bid = floor( wuv.x.div( 0.24 ).add( mod( row, 2 ).mul( 0.5 ) ) ).add( row.mul( 157.0 ) );
+	const bh = hash( bid.add( 1000 ) );
+	const brick = mix( vec3( 0.20, 0.085, 0.06 ), vec3( 0.30, 0.15, 0.10 ), bh ).mul( mx_noise_float( vec3( wuv.mul( 14 ), 1 ) ).mul( 0.12 ).add( 0.94 ) );
+	const mortar = vec3( 0.16, 0.155, 0.145 );
+	const plasterN = fbm( vec3( wuv.mul( 0.28 ), 3.3 ), 5 );
+	const plaster = smoothstep( 0.05, 0.12, plasterN );
+	const plasterCol = mix( vec3( 0.26, 0.27, 0.25 ), vec3( 0.18, 0.2, 0.17 ), smoothstep( - 0.3, 0.5, fbm( vec3( wuv.mul( 1.3 ), 7.7 ), 3 ) ) );
+	const streak = smoothstep( - 0.1, 0.6, mx_noise_float( vec3( wuv.x.mul( 3.5 ), wuv.y.mul( 0.12 ), 2.0 ) ) );
+	const damp = smoothstep( 1.2, ROOM.floor, wp.y ).add( streak.mul( 0.5 ) ).clamp( 0, 1 );
+	let col = mix( mix( mortar, brick, brickMask ), plasterCol, plaster );
+	col = mix( col, col.mul( vec3( 0.42, 0.46, 0.38 ) ), damp.mul( 0.75 ) );
+	wallMat.colorNode = col;
+	wallMat.roughnessNode = mix( float( 0.92 ), float( 0.55 ), damp.mul( 0.5 ) );
+	wallMat.normalNode = bump( brickMask.mul( 0.012 ).add( plaster.mul( 0.02 ) ), float( 1.0 ) );
+}
+
+function wall( w, h, x, y, z, ry ) {
+	const m = new THREE.Mesh( new THREE.PlaneGeometry( w, h ), wallMat );
+	m.position.set( x, y, z ); m.rotation.y = ry; m.receiveShadow = true;
+	env.add( m );
+}
+const WH = ROOM.ceil - ROOM.floor, WY = ( ROOM.ceil + ROOM.floor ) / 2;
+wall( ROOM.x * 2, WH, 0, WY, - ROOM.z, 0 );
+wall( ROOM.x * 2, WH, 0, WY, ROOM.z, Math.PI );
+wall( ROOM.z * 2, WH, - ROOM.x, WY, 0, Math.PI / 2 );
+wall( ROOM.z * 2, WH, ROOM.x, WY, 0, - Math.PI / 2 );
+
+// ═══════════════════════════════════════════════════════════════════
+//  corrugated roof
+// ═══════════════════════════════════════════════════════════════════
+
+const ceilMat = new THREE.MeshStandardNodeMaterial();
+{
+	const cp = positionWorld.xz;
+	const corr = sin( cp.x.mul( 14.0 ) ).mul( 0.5 ).add( 0.5 );
+	ceilMat.colorNode = vec3( 0.06, 0.058, 0.055 ).mul( fbm( vec3( cp.mul( 0.4 ), 1.1 ), 3 ).mul( 0.4 ).add( 0.9 ) );
+	ceilMat.roughnessNode = float( 0.8 );
+	ceilMat.metalnessNode = float( 0.3 );
+	ceilMat.normalNode = bump( corr.mul( 0.03 ), float( 1 ) );
+}
+const ceiling = new THREE.Mesh( new THREE.PlaneGeometry( ROOM.x * 2, ROOM.z * 2 ), ceilMat );
+ceiling.rotation.x = Math.PI / 2; ceiling.position.y = ROOM.ceil;
+env.add( ceiling );
+
+// ═══════════════════════════════════════════════════════════════════
+//  rusted steel
+// ═══════════════════════════════════════════════════════════════════
+
+const rustMat = new THREE.MeshStandardNodeMaterial();
+{
+	const rp = positionWorld;
+	const rn = fbm( rp.mul( vec3( 1.8, 0.5, 1.8 ) ).add( 3.0 ), 5 );
+	const rust = smoothstep( - 0.35, 0.3, rn ).toVar();
+	const rustCol = mix( vec3( 0.20, 0.075, 0.03 ), vec3( 0.42, 0.18, 0.06 ), smoothstep( - 0.4, 0.5, fbm( rp.mul( 7.0 ), 3 ) ) );
+	rustMat.colorNode = mix( vec3( 0.10, 0.12, 0.11 ), rustCol, rust );
+	rustMat.metalnessNode = mix( float( 0.65 ), float( 0.15 ), rust );
+	rustMat.roughnessNode = mix( float( 0.45 ), float( 0.95 ), rust );
+	rustMat.normalNode = bump( mx_noise_float( rp.mul( 22.0 ) ).mul( rust ).mul( 0.004 ), float( 1 ) );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  rotten wood
+// ═══════════════════════════════════════════════════════════════════
+
+const woodMat = new THREE.MeshStandardNodeMaterial();
+{
+	const wp = positionWorld;
+	const grain = sin( wp.x.add( wp.z ).mul( 40.0 ).add( mx_noise_float( wp.mul( vec3( 2, 9, 2 ) ) ).mul( 6.0 ) ) ).mul( 0.5 ).add( 0.5 );
+	const rot = smoothstep( - 0.2, 0.5, fbm( wp.mul( 1.6 ), 4 ) );
+	woodMat.colorNode = mix( mix( vec3( 0.20, 0.13, 0.07 ), vec3( 0.28, 0.19, 0.11 ), grain ), vec3( 0.06, 0.06, 0.05 ), rot.mul( 0.8 ) );
+	woodMat.roughnessNode = float( 0.9 );
+	woodMat.normalNode = bump( grain.mul( 0.004 ), float( 1 ) );
+}
+
+const concreteMat = new THREE.MeshStandardNodeMaterial();
+concreteMat.colorNode = vec3( 0.17, 0.165, 0.155 ).mul( fbm( positionWorld.mul( 3.0 ), 3 ).mul( 0.3 ).add( 0.85 ) );
+concreteMat.roughnessNode = float( 0.95 );
+
+const shadowed = ( m ) => { m.castShadow = true; m.receiveShadow = true; env.add( m ); return m; };
+const box = ( w, h, d, mat, x, y, z ) => { const m = shadowed( new THREE.Mesh( new THREE.BoxGeometry( w, h, d ), mat ) ); m.position.set( x, y, z ); return m; };
+
+// ═══════════════════════════════════════════════════════════════════
+//  columns / trusses
+// ═══════════════════════════════════════════════════════════════════
+for ( const z of [ - 4.5, 4.5 ] ) {
+	for ( const x of [ - 7.5, - 2.5, 2.5, 7.5 ] ) {
+		box( 0.32, WH, 0.06, rustMat, x, WY, z );
+		box( 0.06, WH, 0.30, rustMat, x, WY, z - 0.0 ).position.x = x;
+		box( 0.32, WH, 0.06, rustMat, x, WY, z ).position.z = z - 0.15;
+		box( 0.32, WH, 0.06, rustMat, x, WY, z ).position.z = z + 0.15;
+		box( 0.5, 0.2, 0.5, concreteMat, x, ROOM.floor + 0.1, z );
+	}
+	box( ROOM.x * 2, 0.36, 0.22, rustMat, 0, ROOM.ceil - 0.5, z );
+	for ( let x = - 10; x <= 10; x += 2.5 ) {
+		const b = box( 0.08, 1.6, 0.08, rustMat, x, ROOM.ceil - 1.05, z );
+		b.rotation.z = ( x / 2.5 ) % 2 === 0 ? 0.65 : - 0.65;
+	}
+}
+for ( const x of [ - 7.5, - 2.5, 2.5, 7.5 ] ) box( 0.22, 0.32, ROOM.z * 2, rustMat, x, ROOM.ceil - 0.3, 0 );
+// ═══════════════════════════════════════════════════════════════════
+//  fallen beam
+// ═══════════════════════════════════════════════════════════════════
+{
+	const b = box( 0.26, 5.2, 0.18, rustMat, 6.3, ROOM.floor + 1.9, - 3.6 );
+	b.rotation.set( 0.25, 0.4, 0.62 );
+}
+// ═══════════════════════════════════════════════════════════════════
+//  hanging lamp
+// ═══════════════════════════════════════════════════════════════════
+{
+	const cord = new THREE.Mesh( new THREE.CylinderGeometry( 0.008, 0.008, 2.6 ), rustMat );
+	cord.position.set( 3.6, ROOM.ceil - 1.3, - 2.2 ); env.add( cord );
+	const shade = shadowed( new THREE.Mesh( new THREE.ConeGeometry( 0.42, 0.35, 24, 1, true ), rustMat ) );
+	shade.material = rustMat; shade.position.set( 3.6, ROOM.ceil - 2.7, - 2.2 ); shade.rotation.z = 0.08;
+}
+// ═══════════════════════════════════════════════════════════════════
+//  crates / pallets
+// ═══════════════════════════════════════════════════════════════════
+const crates = [ [ - 9.6, - 6.8, 1.2, 0.2 ], [ - 8.4, - 7.3, 1.0, - 0.3 ], [ - 9.2, - 6.9, 0.9, 0.5, 1.15 ], [ 9.4, 6.2, 1.1, 0.1 ], [ 10.2, 4.9, 0.8, 0.7 ], [ - 10.4, 5.5, 1.0, - 0.2 ] ];
+for ( const [ x, z, sz, ry, stack = 0 ] of crates ) {
+	const c = box( sz, sz, sz, woodMat, x, ROOM.floor + sz / 2 + stack, z );
+	c.rotation.y = ry;
+}
+for ( let i = 0; i < 4; i ++ ) {
+	const pl = box( 1.2, 0.14, 1.0, woodMat, 8.8, ROOM.floor + 0.07 + i * 0.15, - 7.2 );
+	pl.rotation.y = 0.15 + i * 0.07;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  rubble
+// ═══════════════════════════════════════════════════════════════════
+{
+	const N = 260;
+	const rubble = new THREE.InstancedMesh( new THREE.DodecahedronGeometry( 0.1, 0 ), concreteMat, N );
+	const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), v = new THREE.Vector3(), sc = new THREE.Vector3();
+	const piles = [ [ - 10.8, - 8 ], [ 10.6, 7.8 ], [ - 6.8, - 4.2 ], [ 7.2, - 4.9 ], [ - 2, - 8.3 ], [ 4, 8.2 ] ];
+	for ( let i = 0; i < N; i ++ ) {
+		const [ px, pz ] = piles[ i % piles.length ];
+		const r = Math.pow( Math.random(), 1.6 ) * 1.6, a = Math.random() * Math.PI * 2;
+		const s = 0.4 + Math.random() * 1.8;
+		v.set( px + Math.cos( a ) * r, ROOM.floor + 0.05 * s, pz + Math.sin( a ) * r );
+		v.x = Math.max( - ROOM.x + 0.2, Math.min( ROOM.x - 0.2, v.x ) ); v.z = Math.max( - ROOM.z + 0.2, Math.min( ROOM.z - 0.2, v.z ) );
+		q.setFromEuler( e.set( Math.random() * 6, Math.random() * 6, Math.random() * 6 ) );
+		m.compose( v, q, sc.set( s, s * ( 0.5 + Math.random() * 0.6 ), s ) );
+		rubble.setMatrixAt( i, m );
+	}
+	rubble.castShadow = true; rubble.receiveShadow = true;
+	env.add( rubble );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  windows / skylight
+// ═══════════════════════════════════════════════════════════════════
+
+function windowMat( cols, rows, seed, sky ) {
+	const m = new THREE.MeshBasicNodeMaterial();
+	const u = uv().mul( vec2( cols, rows ) );
+	const cell = floor( u ), f = fract( u );
+	const frame = smoothstep( 0.0, 0.06, f.x ).mul( smoothstep( 1.0, 0.94, f.x ) ).mul( smoothstep( 0.0, 0.06, f.y ) ).mul( smoothstep( 1.0, 0.94, f.y ) );
+	const h = hash( cell.x.add( cell.y.mul( 31.0 ) ).add( seed ) );
+	const broken = step( h, 0.22 );
+	const grime = fbm( vec3( uv().mul( vec2( cols, rows ).mul( 1.5 ) ), seed ), 4 ).mul( 0.5 ).add( 0.5 );
+	const glass = mix( sky.mul( grime.mul( 0.5 ).add( 0.25 ) ), sky.mul( 1.6 ), broken );
+	const bottomDirt = smoothstep( 0.0, 0.35, uv().y );
+	m.colorNode = glass.mul( frame ).mul( bottomDirt.mul( 0.6 ).add( 0.4 ) );
+	return m;
+}
+const SKY = vec3( 0.045, 0.06, 0.085 );
+for ( const x of [ - 7.5, - 2.5, 2.5, 7.5 ] ) {
+	const w = new THREE.Mesh( new THREE.PlaneGeometry( 2.8, 3.4 ), windowMat( 5, 6, x * 3.1 + 20, SKY ) );
+	w.position.set( x, 3.2, - ROOM.z + 0.02 );
+	env.add( w );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  skylight
+// ═══════════════════════════════════════════════════════════════════
+const LD = uLightDir.value.clone();
+const skyPos = LD.clone().multiplyScalar( ( ROOM.ceil - 0.02 ) / LD.y );
+{
+	const s = new THREE.Mesh( new THREE.PlaneGeometry( 3.2, 2.4 ), windowMat( 5, 4, 77, SKY.mul( 1.5 ) ) );
+	s.position.copy( skyPos ); s.rotation.x = Math.PI / 2;
+	env.add( s );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  light shafts
+// ═══════════════════════════════════════════════════════════════════
+
+function shaft( from, dir, len, r0, r1, strength ) {
+	const m = new THREE.MeshBasicNodeMaterial( { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: false } );
+	const facing = abs( dot( normalize( normalView ), vec3( 0, 0, 1 ) ) );
+	const along = uv().y;
+	const dust = fbm( positionWorld.mul( 1.4 ).add( vec3( 0, time.mul( - 0.06 ), time.mul( 0.02 ) ) ), 3 ).mul( 0.6 ).add( 0.7 );
+	m.colorNode = vec3( 0.42, 0.52, 0.68 ).mul( pow( facing, 2.5 ) ).mul( mix( float( 0.15 ), float( 1 ), along ) ).mul( dust ).mul( strength ).mul( uShaft );
+	const geo = new THREE.CylinderGeometry( r0, r1, len, 32, 1, true );
+	const mesh = new THREE.Mesh( geo, m );
+	const d = dir.clone().normalize();
+	mesh.quaternion.setFromUnitVectors( new THREE.Vector3( 0, 1, 0 ), d.clone().negate() );
+	mesh.position.copy( from ).addScaledVector( d, len / 2 );
+	mesh.renderOrder = 2;
+	env.add( mesh );
+}
+shaft( skyPos, LD.clone().negate(), ( ROOM.ceil - ROOM.floor ) / LD.y, 1.15, 1.9, 0.05 );
+for ( const x of [ - 7.5, - 2.5, 2.5, 7.5 ] ) shaft( new THREE.Vector3( x, 3.0, - ROOM.z + 0.1 ), new THREE.Vector3( 0.05, - 0.42, 1 ), 9.5, 1.3, 2.2, 0.035 );
+
+// ═══════════════════════════════════════════════════════════════════
+//  dust motes
+// ═══════════════════════════════════════════════════════════════════
+
+{
+	const DUST = isMobile ? 1500 : 4000;
+	const m = new THREE.SpriteNodeMaterial( { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending } );
+	const id = float( instanceIndex );
+	const r = vec3( hash( id.add( 11 ) ), hash( id.add( 37 ) ), hash( id.add( 73 ) ) );
+	const span = vec3( 16, 8.4, 13 );
+	const base = r.mul( span ).sub( span.mul( 0.5 ) );
+	const drift = vec3( sin( time.mul( 0.07 ).add( r.x.mul( 40 ) ) ).mul( 0.5 ), time.mul( 0.035 ).mul( r.y.add( 0.3 ) ), cos( time.mul( 0.05 ).add( r.z.mul( 30 ) ) ).mul( 0.5 ) );
+	const y = mod( base.y.add( drift.y ).add( 4.2 ), 8.4 ).sub( 4.2 ).add( 1.6 );
+	const pos = vec3( base.x.add( drift.x ), y, base.z.add( drift.z ) );
+	m.positionNode = pos;
+	m.scaleNode = hash( id.add( 5 ) ).mul( 0.009 ).add( 0.004 );
+	const warm = exp( length( pos.sub( uRedPos ) ).mul( 0.7 ).negate() ).mul( uPulse.mul( uPulseGain ).add( 1 ) );
+	m.colorNode = vec3( 0.05, 0.06, 0.075 ).add( uEmber.mul( warm ).mul( 0.9 ) ).mul( uDust );
+	m.opacityNode = smoothstep( 0.5, 0.0, length( uv().sub( 0.5 ) ) );
+	const dust = new THREE.Sprite( m );
+	dust.count = DUST; dust.frustumCulled = false;
+	env.add( dust );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  lights
+// ═══════════════════════════════════════════════════════════════════
+
+const emberLight = new THREE.PointLight( 0xff3a18, P.emberLight, 0, 2 );
+emberLight.castShadow = true;
+emberLight.shadow.mapSize.set( isMobile ? 512 : 1024, isMobile ? 512 : 1024 );
+emberLight.shadow.bias = - 0.002;
+emberLight.shadow.radius = 4;
+emberLight.position.copy( uRedPos.value );
+env.add( emberLight );
+
+const moon = new THREE.SpotLight( 0x9fb4d6, P.moonLight, 0, 0.36, 0.7, 2 );
+moon.position.copy( skyPos );
+moon.target.position.copy( skyPos ).addScaledVector( LD, - 10 );
+moon.castShadow = true;
+moon.shadow.mapSize.set( 1024, 1024 );
+moon.shadow.bias = - 0.0015;
+env.add( moon, moon.target );
+
+const windowFill = new THREE.SpotLight( 0x7d92b5, 22, 0, 0.9, 1.0, 2 );
+windowFill.position.set( 0, 3.2, - ROOM.z + 0.4 );
+windowFill.target.position.set( 0, ROOM.floor, 0 );
+env.add( windowFill, windowFill.target );
+
+env.add( new THREE.HemisphereLight( 0x3a4658, 0x0c0a09, 0.35 ) );
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  post processing
+// ═══════════════════════════════════════════════════════════════════
+
+const pipeline = new THREE.RenderPipeline( renderer );
+const scenePass = pass( scene, camera );
+const sceneColor = scenePass.getTextureNode( 'output' );
+
+// ═══════════════════════════════════════════════════════════════════
+//  ember haze
+// ═══════════════════════════════════════════════════════════════════
+
+const haze = VOL ? Fn( () => {
+	const ndc = vec2( screenUV.x.mul( 2 ).sub( 1 ), screenUV.y.mul( 2 ).sub( 1 ).negate() );
+	const far = uInvVP.mul( vec4( ndc, 1, 1 ) );
+	const dir = normalize( far.xyz.div( far.w ).sub( uCamPos ) ).toVar();
+	const R = 1.6;
+	const b = dot( uCamPos, dir ), c = dot( uCamPos, uCamPos ).sub( R * R );
+	const h = b.mul( b ).sub( c );
+	const col = vec3( 0 ).toVar();
+	If( h.greaterThan( 0 ), () => {
+		const sq = sqrt( h );
+		const t0 = max( b.negate().sub( sq ), 0 ), t1 = b.negate().add( sq );
+		const ds = t1.sub( t0 ).div( HAZE_STEPS ).toVar();
+		const jit = fract( fract( dot( screenCoordinate.xy, vec2( 0.06711056, 0.00583715 ) ) ).mul( 52.9829189 ) );
+		const T = float( 1 ).toVar();
+		Loop( HAZE_STEPS, ( { i } ) => {
+			const p = uCamPos.add( dir.mul( t0.add( ds.mul( float( i ).add( jit ) ) ) ) );
+			const g = toGrid( p );
+			const rho = texture3D( densTex, g ).level( 0 ).r;
+			const tr = texture3D( lightTex, g ).level( 0 ).g;
+			const glow = exp( length( p.sub( uRedPos ) ).mul( uFall ).negate() );
+			col.addAssign( uEmber.mul( T.mul( rho ).mul( ds ).mul( tr ).mul( glow ) ) );
+			T.mulAssign( exp( rho.mul( ds ).mul( uExt ).mul( uHazeDens ).negate() ) );
+		} );
+	} );
+	return col.mul( uHazeGain ).mul( uPulse.mul( uPulseGain ).mul( 0.7 ).add( 1.0 ) );
+} )() : null;
+
+const bloomPass = bloom( sceneColor, P.bloomStrength, P.bloomRadius, P.bloomThreshold );
+const bloomHaze = haze ? bloom( sceneColor.add( haze ), P.bloomStrength, P.bloomRadius, P.bloomThreshold ) : null;
+const setOutput = () => {
+	if ( haze && P.haze && P.shadows ) pipeline.outputNode = sceneColor.add( haze ).add( bloomHaze );
+	else pipeline.outputNode = sceneColor.add( bloomPass );
+	pipeline.needsUpdate = true;
+};
+setOutput();
+
+// ═══════════════════════════════════════════════════════════════════
+//  pointer
+// ═══════════════════════════════════════════════════════════════════
+
+const ray = new THREE.Raycaster();
+const ndc = new THREE.Vector2( 9, 9 );
+const ptr = { inside: false, down: false, lastMove: - 1e9, strength: 0, prevHit: new THREE.Vector3(), hit: new THREE.Vector3(), first: true };
+const plane = new THREE.Plane();
+
+const setNDC = ( e ) => { ndc.set( ( e.clientX / innerWidth ) * 2 - 1, - ( e.clientY / innerHeight ) * 2 + 1 ); ptr.lastMove = performance.now(); ptr.inside = true; };
+
+renderer.domElement.addEventListener( 'pointermove', setNDC );
+renderer.domElement.addEventListener( 'pointerdown', ( e ) => { if ( e.button === 0 ) { setNDC( e ); ptr.down = true; } } );
+addEventListener( 'pointerup', () => { ptr.down = false; } );
+addEventListener( 'pointercancel', () => { ptr.down = false; ptr.inside = false; } );
+renderer.domElement.addEventListener( 'pointerleave', () => { ptr.inside = false; } );
+renderer.domElement.addEventListener( 'contextmenu', ( e ) => e.preventDefault() );
+
+// ═══════════════════════════════════════════════════════════════════
+//  ember pulse
+// ═══════════════════════════════════════════════════════════════════
+
+const redBase = uRedPos.value.clone();
+const pulse = { next: 2.4, t0: - 99, dur: 1.2, amp: 1, from: redBase.clone(), to: redBase.clone(), force: false };
+
+function pulseEnvelope( t ) {
+
+	if ( ( P.pulse && t > pulse.next ) || pulse.force ) {
+		pulse.force = false;
+		pulse.t0 = t;
+		pulse.next = t + P.pulseMin + Math.random() * Math.max( 0, P.pulseMax - P.pulseMin );
+		pulse.dur = 0.8 + Math.random() * 0.9;
+		pulse.amp = 0.65 + Math.random() * 0.35;
+		pulse.from.copy( uRedPos.value );
+		const w = P.pulseWander;
+		pulse.to.set( redBase.x + ( Math.random() * 2 - 1 ) * w, redBase.y + ( Math.random() * 2 - 1 ) * w * 0.8, redBase.z + ( Math.random() * 2 - 1 ) * w );
+	}
+	const x = t - pulse.t0, attack = 0.16;
+	uRedPos.value.lerpVectors( pulse.from, pulse.to, Math.min( Math.max( x / ( attack * 2.5 ), 0 ), 1 ) );
+	if ( x < 0 ) return 0;
+	const env = x < attack ? Math.sin( ( x / attack ) * Math.PI * 0.5 ) : Math.exp( - ( x - attack ) / ( pulse.dur * 0.4 ) );
+	return env * pulse.amp;
+
+}
+addEventListener( 'keydown', ( e ) => { if ( e.code === 'Space' ) pulse.force = true; } );
+
+// ═══════════════════════════════════════════════════════════════════
+//  ghost pointer
+// ═══════════════════════════════════════════════════════════════════
+function ghost( t, tIdle ) {
+
+	if ( t < 3.2 ) {
+		const a = Math.min( t / 0.4, 1 );
+		ndc.set( - 0.12 + Math.sin( t * 0.9 ) * 0.03, 0.06 + Math.cos( t * 0.7 ) * 0.03 );
+		return { s: a * 0.9, down: true };
+	}
+	if ( ! P.autoStir || tIdle < 4 ) return null;
+	const u = t * 0.23;
+	ndc.set( Math.sin( u * 1.7 ) * 0.32, Math.sin( u * 1.1 + 1.3 ) * 0.28 );
+	return { s: 0.35 + 0.2 * Math.sin( u * 2.3 ), down: false };
+
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  tweakpane
+// ═══════════════════════════════════════════════════════════════════
+
+try {
+
+	const { Pane } = await import( 'tweakpane' );
+	const pane = new Pane( { container: document.getElementById( 'pane-container' ), title: 'Controls', expanded: false } );
+	const bind = ( f, key, u, opt ) => f.addBinding( P, key, opt ).on( 'change', ( ev ) => { if ( u ) u.value = ev.value; } );
+
+	const fFlow = pane.addFolder( { title: 'Flow', expanded: false } );
+	bind( fFlow, 'turbulence', uTurb, { min: 0, max: 8 } );
+	bind( fFlow, 'flowFreq', uFreq, { min: 0.3, max: 4 } );
+	bind( fFlow, 'flowSpeed', uFlowSpeed, { min: 0, max: 0.6 } );
+	bind( fFlow, 'lump', uLump, { min: 0, max: 0.6 } );
+	bind( fFlow, 'spring', uSpring, { min: 0, max: 8, label: 'rubber band' } );
+	bind( fFlow, 'damping', uDamp, { min: 0.2, max: 8 } );
+
+	const fPulse = pane.addFolder( { title: 'Ember pulse', expanded: false } );
+	fPulse.addBinding( P, 'pulse', { label: 'auto pulse' } );
+	fPulse.addBinding( P, 'pulseMin', { min: 0.5, max: 15, label: 'every min (s)' } );
+	fPulse.addBinding( P, 'pulseMax', { min: 0.5, max: 15, label: 'every max (s)' } );
+	bind( fPulse, 'pulseGain', uPulseGain, { min: 0, max: 8, label: 'flare' } );
+	bind( fPulse, 'pulseTint', uPulseTint, { min: 0, max: 1, label: 'tint swarm' } );
+	bind( fPulse, 'pulsePierce', uPulsePierce, { min: 0, max: 1, label: 'pierce crust' } );
+	fPulse.addBinding( P, 'pulseBloom', { min: 0, max: 2, label: 'bloom boost' } );
+	fPulse.addBinding( P, 'pulseWander', { min: 0, max: 0.6, label: 'light wander' } );
+
+} catch ( e ) { console.warn( 'Tweakpane unavailable', e ); }
+
+// ═══════════════════════════════════════════════════════════════════
+//  render loop
+// ═══════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════
+//  resize guard
+// ═══════════════════════════════════════════════════════════════════
+const MIN_PX = 8;
+const viewOK = () => innerWidth >= MIN_PX && innerHeight >= MIN_PX;
+let sizeDirty = true;
+addEventListener( 'resize', () => { sizeDirty = true; } );
+function applySize() {
+	if ( ! viewOK() ) return false;
+	camera.aspect = innerWidth / innerHeight;
+	camera.updateProjectionMatrix();
+	renderer.setSize( innerWidth, innerHeight );
+	sizeDirty = false;
+	return true;
+}
+
+const timer = new THREE.Timer();
+timer.connect( document );
+let t = 0;
+
+let firstFrame = true, fpsMs = 16, fpsFrames = 0;
+const fpsEl = document.getElementById( 'fps' );
+
+renderer.setAnimationLoop( () => {
+
+	timer.update();
+	if ( ! viewOK() ) return;
+	if ( sizeDirty && ! applySize() ) return;
+	const dt = Math.min( timer.getDelta(), 1 / 30 );
+	if ( firstFrame ) { firstFrame = false; document.getElementById( 'loader' ).classList.add( 'hidden' ); }
+	fpsMs = fpsMs * 0.95 + dt * 1000 * 0.05;
+	if ( ( ++ fpsFrames & 31 ) === 0 ) fpsEl.textContent = ( 1000 / fpsMs ).toFixed( 0 ) + ' fps';
+	t += dt;
+	controls.update( dt );
+
+	const now = performance.now();
+	const tIdle = ( now - ptr.lastMove ) / 1000;
+	let target = 0;
+	if ( ptr.down ) target = 1;
+	else if ( ptr.inside && tIdle < 1.5 ) target = P.hover;
+	else {
+		const g = ghost( t, tIdle );
+		if ( g ) target = g.s;
+	}
+	ptr.strength += ( target - ptr.strength ) * ( 1 - Math.exp( - dt * 8 ) );
+
+	ray.setFromCamera( ndc, camera );
+	uRayO.value.copy( ray.ray.origin );
+	uRayD.value.copy( ray.ray.direction );
+
+	plane.setFromNormalAndCoplanarPoint( camera.getWorldDirection( new THREE.Vector3() ).negate(), new THREE.Vector3() );
+	if ( ray.ray.intersectPlane( plane, ptr.hit ) ) {
+		if ( ptr.first ) { ptr.prevHit.copy( ptr.hit ); ptr.first = false; }
+		uPtrVel.value.subVectors( ptr.hit, ptr.prevHit ).clampLength( 0, 0.25 );
+		ptr.prevHit.copy( ptr.hit );
+	}
+
+	uPtr.value = ptr.strength;
+	uTime.value = t;
+	uPulse.value = pulseEnvelope( t );
+	emberLight.position.copy( uRedPos.value );
+	emberLight.intensity = P.emberLight * ( 1 + uPulse.value * P.pulseGain * 0.5 );
+	for ( const b of [ bloomPass, bloomHaze ] ) if ( b ) b.strength.value = P.bloomStrength * ( 1 + uPulse.value * P.pulseBloom );
+	uDt.value = dt;
+
+	uCamPos.value.copy( camera.position );
+	uInvVP.value.multiplyMatrices( camera.matrixWorld, camera.projectionMatrixInverse );
+
+	renderer.compute( update );
+	if ( VOL && P.shadows ) renderer.compute( volumePasses );
+	pipeline.render();
+
+} );
+</script>
+
+</body>
+</html>
